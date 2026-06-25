@@ -120,6 +120,28 @@ class RealVoxtralEngine:
             return "nl_female"
         return voice if voice in self.PRESET_VOICES else "nl_female"
 
+    def _cleanup_start_artifact(
+        self, audio: np.ndarray, sample_rate: int = 24000
+    ) -> np.ndarray:
+        if audio.size == 0:
+            return audio
+
+        # Trim up to 80 ms of near-silence/noise at start.
+        max_trim = int(0.08 * sample_rate)
+        threshold = 0.003
+        non_silent = np.flatnonzero(np.abs(audio[:max_trim]) > threshold)
+        if non_silent.size > 0 and non_silent[0] > 0:
+            audio = audio[non_silent[0] :]
+
+        # Apply a short 12 ms fade-in to remove encoder/startup clicks.
+        fade_samples = min(int(0.012 * sample_rate), audio.size)
+        if fade_samples > 1:
+            audio[:fade_samples] *= np.linspace(
+                0.0, 1.0, fade_samples, dtype=audio.dtype
+            )
+
+        return audio
+
     def synthesize(
         self, text: str, voice_path: Optional[str], output_path: str, **kwargs
     ) -> str:
@@ -138,6 +160,7 @@ class RealVoxtralEngine:
             if audio_chunks
             else np.zeros(0, dtype=np.float32)
         )
+        audio = self._cleanup_start_artifact(audio, sample_rate=24000)
 
         if output_path.endswith(".mp3"):
             # Python 3.14 removed audioop; avoid pydub and write MP3 via soundfile if available.
