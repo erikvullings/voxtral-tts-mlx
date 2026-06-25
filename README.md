@@ -12,10 +12,19 @@ uv run uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 
 ## Notes
 
+- This project is currently macOS-focused (Apple Silicon) because TTS inference uses `mlx-audio` / MLX.
+- Linux and Windows are not supported by this repository as-is.
 - Python `>=3.14` is supported.
 - The server uses `mlx-audio` for inference.
 - Audio export uses `soundfile` directly (no `pydub`).
 - If MP3 encoding is not available in the local `libsndfile` build, the API falls back to WAV output.
+
+## Platform Support
+
+- Supported now: macOS on Apple Silicon (M-series), with MLX backend.
+- Not supported as-is: Linux and Windows.
+- Transcript alignment (`faster-whisper`) itself is cross-platform, but speech synthesis in this repo depends on MLX (`mlx-audio`).
+- To support Linux/Windows, you would need to swap the TTS backend from MLX to a cross-platform engine and keep the same FastAPI endpoints.
 
 ## Quickstart (Copy/Paste)
 
