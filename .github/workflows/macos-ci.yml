@@ -1,0 +1,72 @@
+name: macOS CI and Packaging
+
+on:
+  push:
+    branches: ["main"]
+    tags:
+      - "v*"
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Validate on macOS
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Syntax check
+        run: uv run python -m py_compile server.py
+
+  package:
+    name: Package source archive
+    runs-on: macos-latest
+    needs: validate
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build source tarball
+        run: |
+          mkdir -p dist
+          tar \
+            --exclude='.git' \
+            --exclude='.venv' \
+            --exclude='__pycache__' \
+            --exclude='generated_lessons' \
+            -czf dist/voxtral-api-macos-source.tar.gz .
+          shasum -a 256 dist/voxtral-api-macos-source.tar.gz > dist/voxtral-api-macos-source.tar.gz.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxtral-api-macos-source
+          path: |
+            dist/voxtral-api-macos-source.tar.gz
+            dist/voxtral-api-macos-source.tar.gz.sha256
+
+      - name: Publish GitHub release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/voxtral-api-macos-source.tar.gz
+            dist/voxtral-api-macos-source.tar.gz.sha256

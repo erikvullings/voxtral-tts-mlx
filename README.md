@@ -10,6 +10,32 @@ uv sync
 uv run uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+## Mac-First Installer
+
+Use the installer to bootstrap a local macOS environment quickly:
+
+```bash
+bash scripts/install-mac.sh
+```
+
+Optional flags:
+
+- `--run`: start the API server after setup
+- `--port <port>`: set server port (default: `8000`)
+
+Example:
+
+```bash
+bash scripts/install-mac.sh --run --port 8001
+```
+
+The script performs:
+
+- macOS + Apple Silicon checks
+- `uv` installation (if missing)
+- dependency sync with `uv sync`
+- optional server start
+
 ## Notes
 
 - This project is currently macOS-focused (Apple Silicon) because TTS inference uses `mlx-audio` / MLX.
@@ -25,6 +51,19 @@ uv run uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 - Not supported as-is: Linux and Windows.
 - Transcript alignment (`faster-whisper`) itself is cross-platform, but speech synthesis in this repo depends on MLX (`mlx-audio`).
 - To support Linux/Windows, you would need to swap the TTS backend from MLX to a cross-platform engine and keep the same FastAPI endpoints.
+
+## CI/CD (macOS)
+
+GitHub Actions workflow: `.github/workflows/macos-ci.yml`
+
+It runs on macOS and does the following automatically:
+
+- validates dependencies (`uv sync`)
+- runs a Python syntax check (`py_compile`)
+- packages the repository as a source archive (`voxtral-api-macos-source.tar.gz`)
+- uploads build artifacts to Actions
+
+On version tags (`v*`), the workflow also publishes a GitHub Release with the packaged archive and SHA256 checksum.
 
 ## Quickstart (Copy/Paste)
 
