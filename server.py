@@ -212,7 +212,9 @@ class RealVoxtralEngine:
         gate_threshold = 0.0012
         if gate_samples > 0:
             prefix = audio[:gate_samples]
-            audio[:gate_samples] = np.where(np.abs(prefix) < gate_threshold, 0.0, prefix)
+            audio[:gate_samples] = np.where(
+                np.abs(prefix) < gate_threshold, 0.0, prefix
+            )
 
         # Force absolute silence for a tiny prefix to eliminate encoder boundary pops.
         hard_mute_samples = min(int(0.006 * sample_rate), audio.size)
