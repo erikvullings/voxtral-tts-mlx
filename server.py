@@ -288,7 +288,7 @@ class RealVoxtralEngine:
         if abs(speed - 1.0) < 0.001 or audio.size == 0:
             return audio
         import pyrubberband
-        return pyrubberband.time_stretch(audio, 24000, 1.0 / speed).astype(audio.dtype)
+        return pyrubberband.time_stretch(audio, 24000, speed).astype(audio.dtype)
 
     def synthesize(
         self, text: str, voice_path: Optional[str], output_path: str, **kwargs
