@@ -65,6 +65,16 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+if ! command -v brew >/dev/null 2>&1; then
+  echo "Homebrew not found. Install it from https://brew.sh and re-run this script."
+  exit 1
+fi
+
+if ! brew list rubberband >/dev/null 2>&1; then
+  echo "Installing rubberband (required by pyrubberband for speed adjustment)..."
+  brew install rubberband
+fi
+
 echo "Syncing dependencies with uv..."
 uv sync
 
