@@ -313,10 +313,9 @@ class RealVoxtralEngine:
             if audio_chunks
             else np.zeros(0, dtype=np.float32)
         )
-        audio = self._cleanup_start_artifact(audio, sample_rate=24000)
-
         speed = float(kwargs.get("speed", 1.0))
         audio = self._apply_speed(audio, speed)
+        audio = self._cleanup_start_artifact(audio, sample_rate=24000)
 
         if output_path.endswith(".mp3"):
             # Python 3.14 removed audioop; avoid pydub and write MP3 via soundfile if available.
