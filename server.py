@@ -288,7 +288,12 @@ class RealVoxtralEngine:
         if abs(speed - 1.0) < 0.001 or audio.size == 0:
             return audio
         import pyrubberband
-        return pyrubberband.time_stretch(audio, 24000, speed).astype(audio.dtype)
+        # Prepend silence so the stretcher has frames to stabilize before speech starts.
+        # The stretched pre-roll is pad/speed samples long and is trimmed afterwards.
+        pad = int(0.1 * 24000)  # 100 ms
+        padded = np.concatenate([np.zeros(pad, dtype=audio.dtype), audio])
+        stretched = pyrubberband.time_stretch(padded, 24000, speed).astype(audio.dtype)
+        return stretched[round(pad / speed):]
 
     def synthesize(
         self, text: str, voice_path: Optional[str], output_path: str, **kwargs
