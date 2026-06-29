@@ -15,7 +15,7 @@ uv run uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 Use the installer to bootstrap a local macOS environment quickly:
 
 ```bash
-bash scripts/install-mac.sh
+scripts/install-mac.sh
 ```
 
 Optional flags:
@@ -26,7 +26,7 @@ Optional flags:
 Example:
 
 ```bash
-bash scripts/install-mac.sh --run --port 8001
+scripts/install-mac.sh --run --port 8001
 ```
 
 The script performs:
@@ -36,6 +36,14 @@ The script performs:
 - dependency sync with `uv sync`
 - optional server start
 
+## System Dependencies
+
+`pyrubberband` (used for pitch-preserving speed adjustment) wraps the native Rubber Band Library. Install it before `uv sync`:
+
+```bash
+brew install rubberband
+```
+
 ## Notes
 
 - This project is currently macOS-focused (Apple Silicon) because TTS inference uses `mlx-audio` / MLX.
@@ -44,6 +52,7 @@ The script performs:
 - The server uses `mlx-audio` for inference.
 - Audio export uses `soundfile` directly (no `pydub`).
 - If MP3 encoding is not available in the local `libsndfile` build, the API falls back to WAV output.
+- Speed adjustment uses `pyrubberband` (Rubber Band Library) for pitch-preserving time-stretch.
 
 ## Platform Support
 

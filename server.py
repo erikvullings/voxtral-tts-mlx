@@ -6,6 +6,7 @@
 #     "pydantic",
 #     "requests",
 #     "soundfile",
+#     "pyrubberband",
 # ]
 # ///
 
@@ -18,7 +19,7 @@ import numpy as np
 import soundfile as sf
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 app = FastAPI(title="Voxtral TTS Translation Layer", version="1.0.0")
 
@@ -54,6 +55,7 @@ class VoxtralExtendedRequest(BaseModel):
     emotion: str = "neutral"
     nfe_steps: int = 16
     temperature: float = 0.7
+    speed: float = 1.0
     output_filename: str = "output.mp3"
 
     model_config = {
@@ -65,6 +67,7 @@ class VoxtralExtendedRequest(BaseModel):
                 "emotion": "neutral",
                 "nfe_steps": 16,
                 "temperature": 0.7,
+                "speed": 1.0,
                 "output_filename": "output.mp3",
             }
         }
@@ -95,12 +98,60 @@ class VoxtralTranscriptRequest(BaseModel):
     }
 
 
+class TranscriptWord(BaseModel):
+    text: str = Field(description="Word text as spoken in the audio")
+    start: float = Field(description="Word start time in seconds", ge=0)
+    end: float = Field(description="Word end time in seconds", ge=0)
+
+
+class TranscriptSentence(BaseModel):
+    id: str = Field(description="Sentence identifier, for example s1")
+    text: str = Field(description="Sentence text")
+    start: float = Field(description="Sentence start time in seconds", ge=0)
+    end: float = Field(description="Sentence end time in seconds", ge=0)
+    words: list[TranscriptWord] = Field(
+        description="Word-level timings for this sentence"
+    )
+
+
+class TranscriptDocument(BaseModel):
+    lesson_id: str = Field(description="Lesson identifier")
+    sentences: list[TranscriptSentence] = Field(
+        description="Sentence and word timestamps"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "lesson_id": "nl_lesson_1",
+                "sentences": [
+                    {
+                        "id": "s1",
+                        "text": "Welkom bij de Nederlandse les.",
+                        "start": 0.0,
+                        "end": 2.15,
+                        "words": [
+                            {"text": "Welkom", "start": 0.0, "end": 0.45},
+                            {"text": "bij", "start": 0.48, "end": 0.65},
+                        ],
+                    }
+                ],
+            }
+        }
+    }
+
+
+class VoxtralTranscriptResponse(TranscriptDocument):
+    audio_path: str = Field(description="Aligned source audio path")
+    transcript_path: str = Field(description="Saved transcript JSON path")
+
+
 class _TTSModel(Protocol):
     def generate(self, *, text: str, voice: str) -> Iterable[Any]: ...
 
 
 class RealVoxtralEngine:
-    MLX_MODEL_ID = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
+    MLX_MODEL_ID = "mlx-community/Voxtral-4B-TTS-2603-mlx-6bit"
     PRESET_VOICES = {
         "casual_male",
         "casual_female",
@@ -208,6 +259,7 @@ class RealVoxtralEngine:
             return audio
 
         # Suppress quiet startup hiss in the first 40 ms.
+
         gate_samples = min(int(0.04 * sample_rate), audio.size)
         gate_threshold = 0.0012
         if gate_samples > 0:
@@ -230,6 +282,14 @@ class RealVoxtralEngine:
 
         return audio
 
+    def _apply_speed(self, audio: np.ndarray, speed: float) -> np.ndarray:
+        """Pitch-preserving time-stretch via Rubber Band Library (pyrubberband)."""
+        speed = max(0.25, min(4.0, speed))
+        if abs(speed - 1.0) < 0.001 or audio.size == 0:
+            return audio
+        import pyrubberband
+        return pyrubberband.time_stretch(audio, 24000, 1.0 / speed).astype(audio.dtype)
+
     def synthesize(
         self, text: str, voice_path: Optional[str], output_path: str, **kwargs
     ) -> str:
@@ -249,6 +309,9 @@ class RealVoxtralEngine:
             else np.zeros(0, dtype=np.float32)
         )
         audio = self._cleanup_start_artifact(audio, sample_rate=24000)
+
+        speed = float(kwargs.get("speed", 1.0))
+        audio = self._apply_speed(audio, speed)
 
         if output_path.endswith(".mp3"):
             # Python 3.14 removed audioop; avoid pydub and write MP3 via soundfile if available.
@@ -501,6 +564,7 @@ async def voxtral_dedicated_speech(
             emotion=request.emotion,
             nfe_steps=request.nfe_steps,
             temperature=request.temperature,
+            speed=request.speed,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -512,7 +576,7 @@ async def voxtral_dedicated_speech(
     )
 
 
-@app.post("/v1/voxtral/transcript")
+@app.post("/v1/voxtral/transcript", response_model=VoxtralTranscriptResponse)
 async def voxtral_generate_transcript(
     request: VoxtralTranscriptRequest,
     transcript_aligner=Depends(get_aligner),
@@ -561,7 +625,7 @@ async def voxtral_generate_transcript(
     }
 
 
-@app.get("/v1/voxtral/transcript/{lesson_id}")
+@app.get("/v1/voxtral/transcript/{lesson_id}", response_model=TranscriptDocument)
 async def voxtral_get_transcript(lesson_id: str):
     transcripts_dir = "generated_lessons"
     transcript_path = _find_transcript_by_lesson_id(lesson_id, transcripts_dir)
@@ -570,7 +634,8 @@ async def voxtral_get_transcript(lesson_id: str):
         import json
 
         with open(transcript_path, "r", encoding="utf-8") as fp:
-            return json.load(fp)
+            data = json.load(fp)
+            return TranscriptDocument.model_validate(data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load transcript: {e}")
 
