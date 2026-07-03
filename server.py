@@ -282,18 +282,34 @@ class RealVoxtralEngine:
 
         return audio
 
+    def _trim_warmup_prefix(
+        self, audio: np.ndarray, sample_rate: int = 24000
+    ) -> np.ndarray:
+        """Drop a small MLX warmup prefix before the main speech starts."""
+        if audio.size == 0:
+            return audio
+
+        # Voxtral MLX can emit a short noisy lead-in before the first stable speech.
+        # Trim a tiny fixed prefix so the adaptive cleanup does not have to preserve it.
+        warmup_trim_samples = min(int(0.04 * sample_rate), audio.size)
+        if warmup_trim_samples <= 0:
+            return audio
+
+        return audio[warmup_trim_samples:]
+
     def _apply_speed(self, audio: np.ndarray, speed: float) -> np.ndarray:
         """Pitch-preserving time-stretch via Rubber Band Library (pyrubberband)."""
         speed = max(0.25, min(4.0, speed))
         if abs(speed - 1.0) < 0.001 or audio.size == 0:
             return audio
         import pyrubberband
+
         # Prepend silence so the stretcher has frames to stabilize before speech starts.
         # The stretched pre-roll is pad/speed samples long and is trimmed afterwards.
         pad = int(0.1 * 24000)  # 100 ms
         padded = np.concatenate([np.zeros(pad, dtype=audio.dtype), audio])
         stretched = pyrubberband.time_stretch(padded, 24000, speed).astype(audio.dtype)
-        return stretched[round(pad / speed):]
+        return stretched[round(pad / speed) :]
 
     def synthesize(
         self, text: str, voice_path: Optional[str], output_path: str, **kwargs
@@ -315,6 +331,7 @@ class RealVoxtralEngine:
         )
         speed = float(kwargs.get("speed", 1.0))
         audio = self._apply_speed(audio, speed)
+        audio = self._trim_warmup_prefix(audio, sample_rate=24000)
         audio = self._cleanup_start_artifact(audio, sample_rate=24000)
 
         if output_path.endswith(".mp3"):
@@ -455,11 +472,13 @@ class FasterWhisperAligner:
         if word_index < len(timed_words):
             remaining = timed_words[word_index:]
             if result_sentences:
-                result_sentences[-1]["words"].extend(remaining)
-                result_sentences[-1]["end"] = remaining[-1]["end"]
-                result_sentences[-1]["text"] = " ".join(
-                    word["text"] for word in result_sentences[-1]["words"]
-                )
+                # Surplus ASR words past the source token count are decoder
+                # artifacts (typically an end-of-audio repetition loop), not
+                # real text: keep the source sentence intact and only stretch
+                # its final word to the true end of speech.
+                last_words = result_sentences[-1]["words"]
+                last_words[-1]["end"] = max(last_words[-1]["end"], remaining[-1]["end"])
+                result_sentences[-1]["end"] = last_words[-1]["end"]
             else:
                 result_sentences.append(
                     {
