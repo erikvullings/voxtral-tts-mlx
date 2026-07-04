@@ -29,6 +29,50 @@ Example:
 scripts/install-mac.sh --run --port 8001
 ```
 
+## Chatterbox Alternative (Drop-In API)
+
+You can run a Chatterbox-backed API that keeps the same endpoint contract as the Voxtral server (`/v1/audio/speech`, `/v1/voxtral/speech`, `/v1/voxtral/transcript`).
+
+```bash
+scripts/install-chatterbox.sh --run --port 8001
+```
+
+This starts:
+
+```bash
+.venv-chatterbox/bin/python -m uvicorn server_chatterbox:app --host 0.0.0.0 --port 8001 --reload
+```
+
+Compatibility notes:
+
+- Request/response schema is the same as the current Voxtral API.
+- Voice selection works through `voice` (`/v1/audio/speech`) or `voice_reference_path` (`/v1/voxtral/speech`).
+- Built-in aliases: `nl_female` (default), `female`, `default`, and `nl_male`/`male` (mapped to `voices/jasper.wav` if present).
+- You can also pass a custom local WAV path or filename in `voices/`.
+- List available voices at runtime with `GET /v1/voxtral/voices`.
+- Speed is supported via `speed` on both speech endpoints. For Chatterbox, values below `1.0` now apply a stronger slowdown curve (for example `0.9` is noticeably slower).
+- Transcript endpoints remain unchanged and still use `faster-whisper` alignment.
+- Chatterbox runs in an isolated `.venv-chatterbox` so Voxtral dependencies stay unchanged.
+
+### Chatterbox Prosody Markup
+
+Chatterbox does not expose full SSML support in this wrapper, but the API supports two lightweight tags in `text`:
+
+- Pause tag: `<break time="500ms"/>` or `<break time="1.2s"/>` (clamped to max 3 seconds)
+- Emphasis tag: `<emphasis>belangrijk</emphasis>`
+
+Example:
+
+```json
+{
+  "text": "Welkom. <break time=\"700ms\"/> Dit is <emphasis>heel belangrijk</emphasis> voor de uitspraak.",
+  "voice_reference_path": "nl_female",
+  "language": "nl",
+  "speed": 0.9,
+  "output_filename": "lesson_with_pauses.wav"
+}
+```
+
 The script performs:
 
 - macOS + Apple Silicon checks

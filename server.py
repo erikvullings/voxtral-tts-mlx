@@ -311,6 +311,37 @@ class RealVoxtralEngine:
         stretched = pyrubberband.time_stretch(padded, 24000, speed).astype(audio.dtype)
         return stretched[round(pad / speed) :]
 
+    @staticmethod
+    def _split_markup_segments(text: str) -> list[tuple[str, float]]:
+        """Split input into speech chunks and pauses.
+
+        Supports explicit break tags and paragraph pauses (blank lines).
+        """
+        normalized = text.replace("\r\n", "\n")
+        normalized = re.sub(r"\n\s*\n+", ' <break time="450ms"/> ', normalized)
+
+        break_pattern = re.compile(
+            r'<break\\s+time="(?P<value>\\d+(?:\\.\\d+)?)\\s*(?P<unit>ms|s)"\\s*/?>',
+            flags=re.IGNORECASE,
+        )
+
+        segments: list[tuple[str, float]] = []
+        cursor = 0
+        for match in break_pattern.finditer(normalized):
+            piece = normalized[cursor : match.start()].strip()
+            val = float(match.group("value"))
+            unit = match.group("unit").lower()
+            pause_s = val / 1000.0 if unit == "ms" else val
+            pause_s = max(0.0, min(3.0, pause_s))
+            segments.append((piece, pause_s))
+            cursor = match.end()
+
+        tail = normalized[cursor:].strip()
+        if tail or not segments:
+            segments.append((tail, 0.0))
+
+        return segments
+
     def synthesize(
         self, text: str, voice_path: Optional[str], output_path: str, **kwargs
     ) -> str:
@@ -320,19 +351,35 @@ class RealVoxtralEngine:
             raise RuntimeError("Voxtral model failed to initialize")
         voice = self._resolve_voice(voice_path)
 
-        audio_chunks = []
-        for result in model.generate(text=text, voice=voice):
-            audio_chunks.append(np.array(result.audio))
-
-        audio = (
-            np.concatenate(audio_chunks)
-            if audio_chunks
-            else np.zeros(0, dtype=np.float32)
-        )
         speed = float(kwargs.get("speed", 1.0))
-        audio = self._apply_speed(audio, speed)
-        audio = self._trim_warmup_prefix(audio, sample_rate=24000)
-        audio = self._cleanup_start_artifact(audio, sample_rate=24000)
+        segment_plan = self._split_markup_segments(text)
+
+        stitched: list[np.ndarray] = []
+        inter_segment_gap = np.zeros(int(0.08 * 24000), dtype=np.float32)
+        for idx, (segment_text, pause_s) in enumerate(segment_plan):
+            if segment_text:
+                part_chunks: list[np.ndarray] = []
+                for result in model.generate(text=segment_text, voice=voice):
+                    part_chunks.append(np.array(result.audio))
+
+                part_audio = (
+                    np.concatenate(part_chunks)
+                    if part_chunks
+                    else np.zeros(0, dtype=np.float32)
+                )
+                part_audio = self._apply_speed(part_audio, speed)
+                part_audio = self._trim_warmup_prefix(part_audio, sample_rate=24000)
+                part_audio = self._cleanup_start_artifact(part_audio, sample_rate=24000)
+
+                if part_audio.size > 0:
+                    if idx > 0 and stitched:
+                        stitched.append(inter_segment_gap)
+                    stitched.append(part_audio)
+
+            if pause_s > 0:
+                stitched.append(np.zeros(int(24000 * pause_s), dtype=np.float32))
+
+        audio = np.concatenate(stitched) if stitched else np.zeros(0, dtype=np.float32)
 
         if output_path.endswith(".mp3"):
             # Python 3.14 removed audioop; avoid pydub and write MP3 via soundfile if available.
@@ -368,6 +415,16 @@ class FasterWhisperAligner:
     @staticmethod
     def _normalize_word(token: str) -> str:
         return re.sub(r"^[^\w]+|[^\w]+$", "", token.strip().lower(), flags=re.UNICODE)
+
+    @staticmethod
+    def _audio_duration(audio_path: str) -> Optional[float]:
+        try:
+            info = sf.info(audio_path)
+            if info.frames and info.samplerate:
+                return float(info.frames) / float(info.samplerate)
+        except Exception:
+            return None
+        return None
 
     @staticmethod
     def _split_source_sentences(text: str) -> list[list[str]]:
@@ -430,30 +487,55 @@ class FasterWhisperAligner:
         result_sentences: list[dict[str, Any]] = []
 
         word_index = 0
-        for idx, tokens in enumerate(sentence_tokens, start=1):
-            sentence_words: list[dict[str, Any]] = []
+        sentence_rows: list[list[dict[str, Any]]] = []
+        for tokens in sentence_tokens:
+            row: list[dict[str, Any]] = []
             for token in tokens:
-                if word_index >= len(timed_words):
-                    break
+                if word_index < len(timed_words):
+                    timed = timed_words[word_index]
+                    row.append(
+                        {"text": token, "start": timed["start"], "end": timed["end"]}
+                    )
+                    word_index += 1
+                else:
+                    row.append({"text": token, "start": None, "end": None})
+            sentence_rows.append(row)
 
-                timed = timed_words[word_index]
-                sentence_words.append(
-                    {
-                        "text": token,
-                        "start": timed["start"],
-                        "end": timed["end"],
-                    }
-                )
-                word_index += 1
+        # When the ASR under-produces (it sometimes drops the audio tail),
+        # every source token must still be emitted: spread the remaining
+        # audio over the untimed tail tokens, weighted by token length, so
+        # the transcript stays structurally complete with approximate times.
+        untimed = [
+            word for row in sentence_rows for word in row if word["start"] is None
+        ]
+        if untimed:
+            timed_flat = [
+                word
+                for row in sentence_rows
+                for word in row
+                if word["start"] is not None
+            ]
+            tail_start = timed_flat[-1]["end"] if timed_flat else 0.0
+            duration = self._audio_duration(audio_path)
+            tail_end = max(duration or 0.0, tail_start)
+            weights = [max(len(word["text"]), 1) for word in untimed]
+            total_weight = sum(weights)
+            span = tail_end - tail_start
+            cursor = tail_start
+            for word, weight in zip(untimed, weights):
+                word["start"] = round(cursor, 3)
+                cursor += span * weight / total_weight
+                word["end"] = round(cursor, 3)
 
-            if sentence_words:
+        for idx, row in enumerate(sentence_rows, start=1):
+            if row:
                 result_sentences.append(
                     {
                         "id": f"s{idx}",
-                        "text": " ".join(tokens),
-                        "start": sentence_words[0]["start"],
-                        "end": sentence_words[-1]["end"],
-                        "words": sentence_words,
+                        "text": " ".join(word["text"] for word in row),
+                        "start": row[0]["start"],
+                        "end": row[-1]["end"],
+                        "words": row,
                     }
                 )
 
@@ -632,8 +714,10 @@ async def voxtral_generate_transcript(
         if not transcript_path.endswith(".json"):
             transcript_path += ".json"
     else:
-        base_name, _ = os.path.splitext(request.audio_path)
-        transcript_path = f"{base_name}.json"
+        # Save inside the service's own output dir; writing next to the
+        # caller's audio file litters directories the service does not own.
+        os.makedirs("generated_lessons", exist_ok=True)
+        transcript_path = os.path.join("generated_lessons", f"{derived_lesson_id}.json")
 
     with open(transcript_path, "w", encoding="utf-8") as fp:
         import json
