@@ -5,11 +5,13 @@
 
 ## Project Structure & Module Organization
 
-This repository is a **single-file Python service** wrapping the Voxtral TTS model as a FastAPI API. All core logic lives in one module:
+This repository is a **Python FastAPI service for MLX-based TTS backends**. The refactor toward a generic multi-model TTS API has started: shared HTTP/request/transcript plumbing now lives in a common module, while backend-specific synthesis logic stays in separate entrypoints/adapters.
 
 | Path | Purpose |
 |---|---|
-| `server.py` | Entire application — models, routes, engine/aligner logic |
+| `api_shared.py` | Shared request/response models, transcript aligner, helper utilities, and app factory |
+| `server.py` | Voxtral-backed entrypoint and Voxtral engine implementation |
+| `server_chatterbox.py` | Chatterbox-backed entrypoint and Chatterbox engine implementation |
 | `pyproject.toml` | Project metadata and dependencies (managed by **uv**) |
 | `main.py` | Entry-point stub (not actively used) |
 | `generated_lessons/` | Output: generated audio (`.mp3`) and transcripts (`.json`) |
@@ -23,7 +25,13 @@ Install dependencies via **uv** (Python package manager):
 
 ```bash
 uv sync                          # Install deps into .venv
-uv run server                    # Start FastAPI on localhost:8000
+uv run uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Alternative entrypoint for local voice-cloning experiments:
+
+```bash
+uv run uvicorn server_chatterbox:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 The server runs with `reload=True`, so code changes are picked up automatically. Swagger UI is available at `/docs`.
@@ -43,9 +51,9 @@ No formal test suite exists yet. Verify manually or via `curl` against the docum
 When tests are added:
 
 - Use **pytest** (`uv add --dev pytest`).
-- Place files alongside `server.py` or in a top-level `tests/` directory.
+- Place files alongside the touched module or in a top-level `tests/` directory.
 - Name files `test_*.py` and functions `test_*`.
-- Prioritize coverage of route handlers (`/v1/audio/speech`, `/v1/voxtral/speech`, `/v1/voxtral/transcript`).
+- Prioritize coverage of shared route handlers in `api_shared.py` plus backend adapter behavior in `server.py` and `server_chatterbox.py`.
 
 ## Commit & Pull Request Guidelines
 

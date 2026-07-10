@@ -1,6 +1,14 @@
-# VOXTRAL TTS API
+# MLX TTS API
 
-FastAPI wrapper around Voxtral TTS (MLX backend) with OpenAI-compatible endpoints.
+FastAPI wrapper around MLX-based TTS backends with OpenAI-compatible endpoints.
+
+Current state:
+
+- `server.py` provides the Voxtral-backed entrypoint.
+- `server_chatterbox.py` provides the Chatterbox-backed entrypoint.
+- `api_shared.py` now owns the shared request/response models, transcript alignment, and HTTP route factory.
+
+This is the first step in refactoring the project from a Voxtral-specific API into a more generic multi-model MLX TTS API.
 
 Open the browser at [http://localhost:8000/docs](http://localhost:8000/docs).
 
@@ -8,6 +16,12 @@ Open the browser at [http://localhost:8000/docs](http://localhost:8000/docs).
 source .venv/bin/activate
 uv sync
 uv run uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Chatterbox entrypoint:
+
+```bash
+uv run uvicorn server_chatterbox:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 ## Mac-First Installer
@@ -45,7 +59,7 @@ This starts:
 
 Compatibility notes:
 
-- Request/response schema is the same as the current Voxtral API.
+- Request/response schema is shared through `api_shared.py`.
 - Voice selection works through `voice` (`/v1/audio/speech`) or `voice_reference_path` (`/v1/voxtral/speech`).
 - Built-in aliases: `nl_female` (default), `female`, `default`, and `nl_male`/`male` (mapped to `voices/jasper.wav` if present).
 - You can also pass a custom local WAV path or filename in `voices/`.
@@ -93,7 +107,8 @@ brew install rubberband
 - This project is currently macOS-focused (Apple Silicon) because TTS inference uses `mlx-audio` / MLX.
 - Linux and Windows are not supported by this repository as-is.
 - Python `>=3.14` is supported.
-- The server uses `mlx-audio` for inference.
+- The project is being refactored toward a generic MLX TTS API with multiple backend adapters.
+- The current shared seam is `api_shared.py`; backend-specific synthesis remains in `server.py` and `server_chatterbox.py`.
 - Audio export uses `soundfile` directly (no `pydub`).
 - If MP3 encoding is not available in the local `libsndfile` build, the API falls back to WAV output.
 - Speed adjustment uses `pyrubberband` (Rubber Band Library) for pitch-preserving time-stretch.

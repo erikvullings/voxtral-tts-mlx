@@ -17,133 +17,7 @@ from typing import Any, Iterable, Optional, Protocol, cast
 
 import numpy as np
 import soundfile as sf
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
-
-app = FastAPI(title="Voxtral TTS Translation Layer", version="1.0.0")
-
-# --- Fixed Pydantic Schemas with Language Parameter & UI Examples ---
-
-
-class OpenAISpeechRequest(BaseModel):
-    model: str = "voxtral"
-    input: str
-    voice: str = "nl_female"
-    language: str = "nl"  # Added language parameter
-    response_format: str = "mp3"
-    speed: float = 1.0
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "model": "voxtral",
-                "input": "Welkom bij de Nederlandse les. Vandaag gaan we grammatica oefenen.",
-                "voice": "nl_female",
-                "language": "nl",  # Prefilled as Dutch in Swagger UI
-                "response_format": "mp3",
-                "speed": 1.0,
-            }
-        }
-    }
-
-
-class VoxtralExtendedRequest(BaseModel):
-    text: str
-    voice_reference_path: Optional[str] = "nl_female"
-    language: str = "nl"  # Added language parameter
-    emotion: str = "neutral"
-    nfe_steps: int = 16
-    temperature: float = 0.7
-    speed: float = 1.0
-    output_filename: str = "output.mp3"
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "text": "Dit is een voorbeeldzin in het Nederlands met geavanceerde parameters.",
-                "voice_reference_path": "nl_female",
-                "language": "nl",  # Prefilled as Dutch in Swagger UI
-                "emotion": "neutral",
-                "nfe_steps": 16,
-                "temperature": 0.7,
-                "speed": 1.0,
-                "output_filename": "output.mp3",
-            }
-        }
-    }
-
-
-class VoxtralTranscriptRequest(BaseModel):
-    audio_path: str
-    text: str
-    language: Optional[str] = "nl"
-    lesson_id: Optional[str] = None
-    transcript_filename: Optional[str] = None
-    alignment_model_size: str = "small"
-    beam_size: int = 5
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "audio_path": "generated_lessons/nl_lesson_1.mp3",
-                "text": "Welkom bij de Nederlandse les. Vandaag oefenen we uitspraak.",
-                "language": "nl",
-                "lesson_id": "nl_lesson_1",
-                "transcript_filename": "nl_lesson_1.json",
-                "alignment_model_size": "small",
-                "beam_size": 5,
-            }
-        }
-    }
-
-
-class TranscriptWord(BaseModel):
-    text: str = Field(description="Word text as spoken in the audio")
-    start: float = Field(description="Word start time in seconds", ge=0)
-    end: float = Field(description="Word end time in seconds", ge=0)
-
-
-class TranscriptSentence(BaseModel):
-    id: str = Field(description="Sentence identifier, for example s1")
-    text: str = Field(description="Sentence text")
-    start: float = Field(description="Sentence start time in seconds", ge=0)
-    end: float = Field(description="Sentence end time in seconds", ge=0)
-    words: list[TranscriptWord] = Field(
-        description="Word-level timings for this sentence"
-    )
-
-
-class TranscriptDocument(BaseModel):
-    lesson_id: str = Field(description="Lesson identifier")
-    sentences: list[TranscriptSentence] = Field(
-        description="Sentence and word timestamps"
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "lesson_id": "nl_lesson_1",
-                "sentences": [
-                    {
-                        "id": "s1",
-                        "text": "Welkom bij de Nederlandse les.",
-                        "start": 0.0,
-                        "end": 2.15,
-                        "words": [
-                            {"text": "Welkom", "start": 0.0, "end": 0.45},
-                            {"text": "bij", "start": 0.48, "end": 0.65},
-                        ],
-                    }
-                ],
-            }
-        }
-    }
-
-
-class VoxtralTranscriptResponse(TranscriptDocument):
-    audio_path: str = Field(description="Aligned source audio path")
-    transcript_path: str = Field(description="Saved transcript JSON path")
+from api_shared import create_app
 
 
 class _TTSModel(Protocol):
@@ -174,6 +48,7 @@ class RealVoxtralEngine:
         "hi_male",
         "hi_female",
     }
+    VOICES_DIR = "voices"
 
     def __init__(self):
         self._model: Optional[_TTSModel] = None
@@ -208,12 +83,48 @@ class RealVoxtralEngine:
                 self._warm_up_model(model)
 
     def _resolve_voice(self, voice: Optional[str]) -> str:
-        """Map a preset name or legacy file path to a valid preset voice name."""
+        """Resolve a Voxtral preset voice name.
+
+        The MLX Voxtral backend only supports its built-in preset IDs and does
+        not support local reference-audio voice cloning.
+        """
         if not voice:
             return "nl_female"
-        if "/" in voice or "\\" in voice or voice.endswith(".wav"):
-            return "nl_female"
-        return voice if voice in self.PRESET_VOICES else "nl_female"
+
+        normalized = voice.strip().lower()
+        if normalized in self.PRESET_VOICES:
+            return normalized
+
+        # Detect local reference-audio requests so we can fail clearly.
+        candidates = [normalized, voice]
+        if "/" not in voice and "\\" not in voice:
+            candidates.extend(
+                [
+                    os.path.join(self.VOICES_DIR, normalized),
+                    os.path.join(self.VOICES_DIR, voice),
+                ]
+            )
+        for candidate in candidates:
+            if candidate.lower().endswith(".wav") and os.path.isfile(candidate):
+                raise ValueError(
+                    "Local voice reference files are not supported by the Voxtral backend. "
+                    "Use a preset voice or run the Chatterbox backend (server_chatterbox.py) "
+                    "for voice cloning."
+                )
+            wav_candidate = f"{candidate}.wav"
+            if os.path.isfile(wav_candidate):
+                raise ValueError(
+                    "Local voice reference files are not supported by the Voxtral backend. "
+                    "Use a preset voice or run the Chatterbox backend (server_chatterbox.py) "
+                    "for voice cloning."
+                )
+
+        raise ValueError(
+            f"Unknown voice '{voice}', expected one of {sorted(self.PRESET_VOICES)}"
+        )
+
+    def list_voices(self) -> list[str]:
+        return sorted(self.PRESET_VOICES)
 
     def _cleanup_start_artifact(
         self, audio: np.ndarray, sample_rate: int = 24000
@@ -321,7 +232,7 @@ class RealVoxtralEngine:
         normalized = re.sub(r"\n\s*\n+", ' <break time="450ms"/> ', normalized)
 
         break_pattern = re.compile(
-            r'<break\\s+time="(?P<value>\\d+(?:\\.\\d+)?)\\s*(?P<unit>ms|s)"\\s*/?>',
+            r'<break\s+time="(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>ms|s)"\s*/?>',
             flags=re.IGNORECASE,
         )
 
@@ -395,356 +306,12 @@ class RealVoxtralEngine:
         return output_path
 
 
-class FasterWhisperAligner:
-    def __init__(self):
-        self._models: dict[str, Any] = {}
-        self._lock = threading.Lock()
-
-    def _load_model(self, model_size: str):
-        with self._lock:
-            if model_size in self._models:
-                return self._models[model_size]
-
-            from faster_whisper import WhisperModel
-
-            # macOS: use CPU + int8 for better compatibility/perf balance.
-            model = WhisperModel(model_size, device="cpu", compute_type="int8")
-            self._models[model_size] = model
-            return model
-
-    @staticmethod
-    def _normalize_word(token: str) -> str:
-        return re.sub(r"^[^\w]+|[^\w]+$", "", token.strip().lower(), flags=re.UNICODE)
-
-    @staticmethod
-    def _audio_duration(audio_path: str) -> Optional[float]:
-        try:
-            info = sf.info(audio_path)
-            if info.frames and info.samplerate:
-                return float(info.frames) / float(info.samplerate)
-        except Exception:
-            return None
-        return None
-
-    @staticmethod
-    def _split_source_sentences(text: str) -> list[list[str]]:
-        sentence_texts = [
-            chunk.strip()
-            for chunk in re.split(r"(?<=[.!?])\s+", text.strip())
-            if chunk.strip()
-        ]
-        if not sentence_texts and text.strip():
-            sentence_texts = [text.strip()]
-
-        sentence_tokens: list[list[str]] = []
-        for sentence in sentence_texts:
-            tokens = [tok for tok in sentence.split() if tok.strip()]
-            if tokens:
-                sentence_tokens.append(tokens)
-        return sentence_tokens
-
-    def align(
-        self,
-        audio_path: str,
-        *,
-        lesson_id: str,
-        source_text: str,
-        language: Optional[str],
-        model_size: str,
-        beam_size: int,
-    ) -> dict[str, Any]:
-        model = self._load_model(model_size)
-
-        segments, _ = model.transcribe(
-            audio_path,
-            task="transcribe",
-            language=language,
-            beam_size=beam_size,
-            word_timestamps=True,
-            condition_on_previous_text=False,
-            vad_filter=True,
-            initial_prompt=source_text,
-        )
-
-        timed_words: list[dict[str, Any]] = []
-        for segment in segments:
-            for word in segment.words or []:
-                if word.start is None or word.end is None:
-                    continue
-                word_text = (word.word or "").strip()
-                if not word_text:
-                    continue
-                timed_words.append(
-                    {
-                        "text": word_text,
-                        "start": round(float(word.start), 3),
-                        "end": round(float(word.end), 3),
-                    }
-                )
-
-        # Build sentence buckets from source text and fill with aligned word times.
-        sentence_tokens = self._split_source_sentences(source_text)
-        result_sentences: list[dict[str, Any]] = []
-
-        word_index = 0
-        sentence_rows: list[list[dict[str, Any]]] = []
-        for tokens in sentence_tokens:
-            row: list[dict[str, Any]] = []
-            for token in tokens:
-                if word_index < len(timed_words):
-                    timed = timed_words[word_index]
-                    row.append(
-                        {"text": token, "start": timed["start"], "end": timed["end"]}
-                    )
-                    word_index += 1
-                else:
-                    row.append({"text": token, "start": None, "end": None})
-            sentence_rows.append(row)
-
-        # When the ASR under-produces (it sometimes drops the audio tail),
-        # every source token must still be emitted: spread the remaining
-        # audio over the untimed tail tokens, weighted by token length, so
-        # the transcript stays structurally complete with approximate times.
-        untimed = [
-            word for row in sentence_rows for word in row if word["start"] is None
-        ]
-        if untimed:
-            timed_flat = [
-                word
-                for row in sentence_rows
-                for word in row
-                if word["start"] is not None
-            ]
-            tail_start = timed_flat[-1]["end"] if timed_flat else 0.0
-            duration = self._audio_duration(audio_path)
-            tail_end = max(duration or 0.0, tail_start)
-            weights = [max(len(word["text"]), 1) for word in untimed]
-            total_weight = sum(weights)
-            span = tail_end - tail_start
-            cursor = tail_start
-            for word, weight in zip(untimed, weights):
-                word["start"] = round(cursor, 3)
-                cursor += span * weight / total_weight
-                word["end"] = round(cursor, 3)
-
-        for idx, row in enumerate(sentence_rows, start=1):
-            if row:
-                result_sentences.append(
-                    {
-                        "id": f"s{idx}",
-                        "text": " ".join(word["text"] for word in row),
-                        "start": row[0]["start"],
-                        "end": row[-1]["end"],
-                        "words": row,
-                    }
-                )
-
-        # If source tokenization and aligned words diverge, fall back to grouped raw words.
-        if not result_sentences and timed_words:
-            result_sentences.append(
-                {
-                    "id": "s1",
-                    "text": source_text.strip(),
-                    "start": timed_words[0]["start"],
-                    "end": timed_words[-1]["end"],
-                    "words": timed_words,
-                }
-            )
-
-        if word_index < len(timed_words):
-            remaining = timed_words[word_index:]
-            if result_sentences:
-                # Surplus ASR words past the source token count are decoder
-                # artifacts (typically an end-of-audio repetition loop), not
-                # real text: keep the source sentence intact and only stretch
-                # its final word to the true end of speech.
-                last_words = result_sentences[-1]["words"]
-                last_words[-1]["end"] = max(last_words[-1]["end"], remaining[-1]["end"])
-                result_sentences[-1]["end"] = last_words[-1]["end"]
-            else:
-                result_sentences.append(
-                    {
-                        "id": "s1",
-                        "text": " ".join(word["text"] for word in remaining),
-                        "start": remaining[0]["start"],
-                        "end": remaining[-1]["end"],
-                        "words": remaining,
-                    }
-                )
-
-        return {"lesson_id": lesson_id, "sentences": result_sentences}
-
-
 voxtral_engine = RealVoxtralEngine()
-aligner = FasterWhisperAligner()
-
-
-def get_engine():
-    return voxtral_engine
-
-
-def get_aligner():
-    return aligner
-
-
-def _find_transcript_by_lesson_id(lesson_id: str, transcripts_dir: str) -> str:
-    """Resolve a lesson_id to a transcript JSON path in generated_lessons."""
-    safe_lesson_id = lesson_id.strip()
-    if not safe_lesson_id:
-        raise HTTPException(status_code=400, detail="lesson_id cannot be empty")
-    if "/" in safe_lesson_id or "\\" in safe_lesson_id:
-        raise HTTPException(status_code=400, detail="invalid lesson_id")
-
-    direct_path = os.path.join(transcripts_dir, f"{safe_lesson_id}.json")
-    if os.path.exists(direct_path):
-        return direct_path
-
-    if not os.path.isdir(transcripts_dir):
-        raise HTTPException(status_code=404, detail="No transcripts directory found")
-
-    for file_name in os.listdir(transcripts_dir):
-        if not file_name.endswith(".json"):
-            continue
-
-        transcript_path = os.path.join(transcripts_dir, file_name)
-        try:
-            import json
-
-            with open(transcript_path, "r", encoding="utf-8") as fp:
-                transcript = json.load(fp)
-        except Exception:
-            continue
-
-        if transcript.get("lesson_id") == safe_lesson_id:
-            return transcript_path
-
-    raise HTTPException(
-        status_code=404, detail=f"Transcript not found for lesson_id '{safe_lesson_id}'"
-    )
-
-
-# --- API Routes ---
-
-
-@app.post("/v1/audio/speech")
-async def openai_compatible_speech(
-    request: OpenAISpeechRequest, engine=Depends(get_engine)
-):
-    requested_format = request.response_format.lower()
-    output_ext = "mp3" if requested_format == "mp3" else "wav"
-    output_path = f"generated_lessons/lesson_{hash(request.input)}.{output_ext}"
-    os.makedirs("generated_lessons", exist_ok=True)
-    voice_ref = request.voice
-
-    try:
-        actual_output_path = engine.synthesize(
-            text=request.input,
-            voice_path=voice_ref,
-            output_path=output_path,
-            speed=request.speed,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    response_name = os.path.basename(actual_output_path)
-    media_type = "audio/mpeg" if response_name.endswith(".mp3") else "audio/wav"
-    return FileResponse(
-        actual_output_path, media_type=media_type, filename=response_name
-    )
-
-
-@app.post("/v1/voxtral/speech")
-async def voxtral_dedicated_speech(
-    request: VoxtralExtendedRequest, engine=Depends(get_engine)
-):
-    output_path = f"generated_lessons/{request.output_filename}"
-    os.makedirs("generated_lessons", exist_ok=True)
-    voice_ref = request.voice_reference_path
-
-    try:
-        actual_output_path = engine.synthesize(
-            text=request.text,
-            voice_path=voice_ref,
-            output_path=output_path,
-            emotion=request.emotion,
-            nfe_steps=request.nfe_steps,
-            temperature=request.temperature,
-            speed=request.speed,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    response_name = os.path.basename(actual_output_path)
-    media_type = "audio/mpeg" if response_name.endswith(".mp3") else "audio/wav"
-    return FileResponse(
-        actual_output_path, media_type=media_type, filename=response_name
-    )
-
-
-@app.post("/v1/voxtral/transcript", response_model=VoxtralTranscriptResponse)
-async def voxtral_generate_transcript(
-    request: VoxtralTranscriptRequest,
-    transcript_aligner=Depends(get_aligner),
-):
-    derived_lesson_id = (
-        request.lesson_id or os.path.splitext(os.path.basename(request.audio_path))[0]
-    )
-
-    if not os.path.exists(request.audio_path):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Audio file not found: {request.audio_path}",
-        )
-
-    try:
-        transcript = transcript_aligner.align(
-            request.audio_path,
-            lesson_id=derived_lesson_id,
-            source_text=request.text,
-            language=request.language,
-            model_size=request.alignment_model_size,
-            beam_size=request.beam_size,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    if request.transcript_filename:
-        os.makedirs("generated_lessons", exist_ok=True)
-        transcript_path = os.path.join("generated_lessons", request.transcript_filename)
-        if not transcript_path.endswith(".json"):
-            transcript_path += ".json"
-    else:
-        # Save inside the service's own output dir; writing next to the
-        # caller's audio file litters directories the service does not own.
-        os.makedirs("generated_lessons", exist_ok=True)
-        transcript_path = os.path.join("generated_lessons", f"{derived_lesson_id}.json")
-
-    with open(transcript_path, "w", encoding="utf-8") as fp:
-        import json
-
-        json.dump(transcript, fp, ensure_ascii=False, indent=2)
-
-    return {
-        "lesson_id": transcript["lesson_id"],
-        "audio_path": request.audio_path,
-        "transcript_path": transcript_path,
-        "sentences": transcript["sentences"],
-    }
-
-
-@app.get("/v1/voxtral/transcript/{lesson_id}", response_model=TranscriptDocument)
-async def voxtral_get_transcript(lesson_id: str):
-    transcripts_dir = "generated_lessons"
-    transcript_path = _find_transcript_by_lesson_id(lesson_id, transcripts_dir)
-
-    try:
-        import json
-
-        with open(transcript_path, "r", encoding="utf-8") as fp:
-            data = json.load(fp)
-            return TranscriptDocument.model_validate(data)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load transcript: {e}")
+app = create_app(
+    title="Voxtral TTS Translation Layer",
+    engine=voxtral_engine,
+    voice_response_model=list[str],
+)
 
 
 if __name__ == "__main__":

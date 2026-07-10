@@ -35,28 +35,15 @@ import soundfile as sf
 import torch
 import torch.nn.functional as F
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-
-from server import (
-    FasterWhisperAligner,
+from api_shared import (
     OpenAISpeechRequest,
     TranscriptDocument,
+    VoiceOption,
     VoxtralExtendedRequest,
     VoxtralTranscriptRequest,
     VoxtralTranscriptResponse,
-    _find_transcript_by_lesson_id,
+    create_app,
 )
-
-app = FastAPI(title="Chatterbox TTS Translation Layer", version="1.0.0")
-
-
-class VoiceOption(BaseModel):
-    name: str
-    gender: str
-    source: str
-    is_default: bool = False
 
 
 class ChatterboxOpenAISpeechRequest(OpenAISpeechRequest):
@@ -182,7 +169,7 @@ class RealChatterboxEngine:
         return None
 
     @staticmethod
-    def list_voice_options() -> list[VoiceOption]:
+    def list_voices() -> list[VoiceOption]:
         options = [
             VoiceOption(
                 name="nl_female",
@@ -476,144 +463,14 @@ class RealChatterboxEngine:
         sf.write(output_path, audio, samplerate=model.sr, format="WAV")
         return output_path
 
-
 chatterbox_engine = RealChatterboxEngine()
-aligner = FasterWhisperAligner()
-
-
-def get_engine() -> RealChatterboxEngine:
-    return chatterbox_engine
-
-
-def get_aligner() -> FasterWhisperAligner:
-    return aligner
-
-
-@app.get("/v1/voxtral/voices", response_model=list[VoiceOption])
-async def list_voices(engine=Depends(get_engine)):
-    typed_engine = cast(RealChatterboxEngine, engine)
-    return typed_engine.list_voice_options()
-
-
-@app.post("/v1/audio/speech")
-async def openai_compatible_speech(
-    request: ChatterboxOpenAISpeechRequest, engine=Depends(get_engine)
-):
-    requested_format = request.response_format.lower()
-    output_ext = "mp3" if requested_format == "mp3" else "wav"
-    output_path = f"generated_lessons/lesson_{hash(request.input)}.{output_ext}"
-    os.makedirs("generated_lessons", exist_ok=True)
-
-    try:
-        actual_output_path = engine.synthesize(
-            text=request.input,
-            voice_path=request.voice,
-            output_path=output_path,
-            language=request.language,
-            speed=request.speed,
-            exaggeration=request.exaggeration,
-            cfg_weight=request.cfg_weight,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    response_name = os.path.basename(actual_output_path)
-    media_type = "audio/mpeg" if response_name.endswith(".mp3") else "audio/wav"
-    return FileResponse(
-        actual_output_path, media_type=media_type, filename=response_name
-    )
-
-
-@app.post("/v1/voxtral/speech")
-async def voxtral_dedicated_speech(
-    request: ChatterboxVoxtralExtendedRequest, engine=Depends(get_engine)
-):
-    output_path = f"generated_lessons/{request.output_filename}"
-    os.makedirs("generated_lessons", exist_ok=True)
-
-    try:
-        actual_output_path = engine.synthesize(
-            text=request.text,
-            voice_path=request.voice_reference_path,
-            output_path=output_path,
-            language=request.language,
-            temperature=request.temperature,
-            speed=request.speed,
-            exaggeration=request.exaggeration,
-            cfg_weight=request.cfg_weight,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    response_name = os.path.basename(actual_output_path)
-    media_type = "audio/mpeg" if response_name.endswith(".mp3") else "audio/wav"
-    return FileResponse(
-        actual_output_path, media_type=media_type, filename=response_name
-    )
-
-
-@app.post("/v1/voxtral/transcript", response_model=VoxtralTranscriptResponse)
-async def voxtral_generate_transcript(
-    request: VoxtralTranscriptRequest,
-    transcript_aligner=Depends(get_aligner),
-):
-    derived_lesson_id = (
-        request.lesson_id or os.path.splitext(os.path.basename(request.audio_path))[0]
-    )
-
-    if not os.path.exists(request.audio_path):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Audio file not found: {request.audio_path}",
-        )
-
-    try:
-        transcript = transcript_aligner.align(
-            request.audio_path,
-            lesson_id=derived_lesson_id,
-            source_text=request.text,
-            language=request.language,
-            model_size=request.alignment_model_size,
-            beam_size=request.beam_size,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    if request.transcript_filename:
-        os.makedirs("generated_lessons", exist_ok=True)
-        transcript_path = os.path.join("generated_lessons", request.transcript_filename)
-        if not transcript_path.endswith(".json"):
-            transcript_path += ".json"
-    else:
-        os.makedirs("generated_lessons", exist_ok=True)
-        transcript_path = os.path.join("generated_lessons", f"{derived_lesson_id}.json")
-
-    with open(transcript_path, "w", encoding="utf-8") as fp:
-        import json
-
-        json.dump(transcript, fp, ensure_ascii=False, indent=2)
-
-    return {
-        "lesson_id": transcript["lesson_id"],
-        "audio_path": request.audio_path,
-        "transcript_path": transcript_path,
-        "sentences": transcript["sentences"],
-    }
-
-
-@app.get("/v1/voxtral/transcript/{lesson_id}", response_model=TranscriptDocument)
-async def voxtral_get_transcript(lesson_id: str):
-    transcripts_dir = "generated_lessons"
-    transcript_path = _find_transcript_by_lesson_id(lesson_id, transcripts_dir)
-
-    try:
-        import json
-
-        with open(transcript_path, "r", encoding="utf-8") as fp:
-            data = json.load(fp)
-            return TranscriptDocument.model_validate(data)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load transcript: {e}")
+app = create_app(
+    title="Chatterbox TTS Translation Layer",
+    engine=chatterbox_engine,
+    voice_response_model=list[VoiceOption],
+    openai_request_model=ChatterboxOpenAISpeechRequest,
+    extended_request_model=ChatterboxVoxtralExtendedRequest,
+)
 
 
 if __name__ == "__main__":
