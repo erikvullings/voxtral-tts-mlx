@@ -6,7 +6,7 @@ import uvicorn
 
 
 BACKEND_APPS = {
-    "voxtral": "server:app",
+    "voxtral": "server_voxtral:app",
     "chatterbox": "server_chatterbox:app",
 }
 

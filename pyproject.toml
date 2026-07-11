@@ -28,4 +28,10 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["main", "api_shared", "server", "server_chatterbox"]
+py-modules = [
+    "main",
+    "api_shared",
+    "server",
+    "server_voxtral",
+    "server_chatterbox",
+]

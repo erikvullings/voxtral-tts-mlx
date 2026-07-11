@@ -4,7 +4,7 @@ FastAPI wrapper around MLX-based (Apple) TTS backends with OpenAI-compatible end
 
 Current state:
 
-- `server.py` provides the Voxtral-backed entrypoint.
+- `server_voxtral.py` provides the Voxtral-backed entrypoint.
 - `server_chatterbox.py` provides the Chatterbox-backed entrypoint.
 - `api_shared.py` now owns the shared request/response models, transcript alignment, and HTTP route factory.
 
@@ -117,7 +117,7 @@ brew install rubberband
 - Linux and Windows are not supported by this repository as-is.
 - Python `>=3.14` is supported.
 - The project is being refactored toward a generic MLX TTS API with multiple backend adapters.
-- The current shared seam is `api_shared.py`; backend-specific synthesis remains in `server.py` and `server_chatterbox.py`.
+- The current shared seam is `api_shared.py`; backend-specific synthesis remains in `server_voxtral.py` and `server_chatterbox.py`.
 - Audio export uses `soundfile` directly (no `pydub`).
 - If MP3 encoding is not available in the local `libsndfile` build, the API falls back to WAV output.
 - Speed adjustment uses `pyrubberband` (Rubber Band Library) for pitch-preserving time-stretch.

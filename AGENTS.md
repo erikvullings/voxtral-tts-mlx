@@ -10,7 +10,7 @@ This repository is a **Python FastAPI service for MLX-based TTS backends**. The 
 | Path | Purpose |
 |---|---|
 | `api_shared.py` | Shared request/response models, transcript aligner, helper utilities, and app factory |
-| `server.py` | Voxtral-backed entrypoint and Voxtral engine implementation |
+| `server_voxtral.py` | Voxtral-backed entrypoint and Voxtral engine implementation |
 | `server_chatterbox.py` | Chatterbox-backed entrypoint and Chatterbox engine implementation |
 | `pyproject.toml` | Project metadata and dependencies (managed by **uv**) |
 | `main.py` | Entry-point stub (not actively used) |
@@ -53,7 +53,7 @@ When tests are added:
 - Use **pytest** (`uv add --dev pytest`).
 - Place files alongside the touched module or in a top-level `tests/` directory.
 - Name files `test_*.py` and functions `test_*`.
-- Prioritize coverage of shared route handlers in `api_shared.py` plus backend adapter behavior in `server.py` and `server_chatterbox.py`.
+- Prioritize coverage of shared route handlers in `api_shared.py` plus backend adapter behavior in `server_voxtral.py` and `server_chatterbox.py`.
 
 ## Commit & Pull Request Guidelines
 
