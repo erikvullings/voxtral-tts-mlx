@@ -17,7 +17,7 @@ This repository is a **Python FastAPI service for MLX-based TTS backends**. The 
 | `generated_lessons/` | Output: generated audio (`.mp3`) and transcripts (`.json`) |
 | `voices/` | Voice reference files for cloning |
 | `.github/workflows/macos-ci.yml` | macOS CI workflow |
-| `scripts/install-mac.sh` | One-command macOS setup helper |
+| `scripts/install-mac.sh` | Unified one-command macOS setup helper with backend selection |
 
 ## Build, Test, and Development Commands
 
@@ -25,13 +25,13 @@ Install dependencies via **uv** (Python package manager):
 
 ```bash
 uv sync                          # Install deps into .venv
-uv run uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+uv run tts --host 0.0.0.0 --port 8000 --reload
 ```
 
 Alternative entrypoint for local voice-cloning experiments:
 
 ```bash
-uv run uvicorn server_chatterbox:app --host 0.0.0.0 --port 8001 --reload
+uv run tts --backend chatterbox --host 0.0.0.0 --port 8001 --reload
 ```
 
 The server runs with `reload=True`, so code changes are picked up automatically. Swagger UI is available at `/docs`.
@@ -71,6 +71,6 @@ The project follows **[Conventional Commits](https://www.conventionalcommits.org
 
 ## macOS Setup & CI
 
-- **First-time install:** `brew install rubberband && bash scripts/install-mac.sh` or `brew install rubberband && uv sync`.
+- **First-time install:** `brew install rubberband && bash scripts/install-mac.sh` (interactive backend choice) or `brew install rubberband && uv sync`.
 - `rubberband` is a required system library for `pyrubberband` (pitch-preserving speed adjustment); `uv sync` will fail without it.
 - **CI:** the macOS workflow in `.github/workflows/macos-ci.yml` validates on every push/PR.

@@ -1,6 +1,6 @@
 # MLX TTS API
 
-FastAPI wrapper around MLX-based TTS backends with OpenAI-compatible endpoints.
+FastAPI wrapper around MLX-based (Apple) TTS backends with OpenAI-compatible endpoints.
 
 Current state:
 
@@ -15,18 +15,26 @@ Open the browser at [http://localhost:8000/docs](http://localhost:8000/docs).
 ```bash
 source .venv/bin/activate
 uv sync
-uv run uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+uv run tts --host 0.0.0.0 --port 8000 --reload
 ```
 
 Chatterbox entrypoint:
 
 ```bash
-uv run uvicorn server_chatterbox:app --host 0.0.0.0 --port 8001 --reload
+uv run tts --backend chatterbox --host 0.0.0.0 --port 8001 --reload
 ```
+
+CLI options:
+
+- `--backend voxtral|chatterbox`
+- `--host <host>`
+- `--port <port>`
+- `--reload`
 
 ## Mac-First Installer
 
-Use the installer to bootstrap a local macOS environment quickly:
+Use the unified installer to bootstrap a local macOS environment quickly.
+It supports multiple backends and asks which one to install when `--backend` is omitted.
 
 ```bash
 scripts/install-mac.sh
@@ -34,13 +42,14 @@ scripts/install-mac.sh
 
 Optional flags:
 
+- `--backend voxtral|chatterbox`: select backend explicitly (otherwise interactive prompt)
 - `--run`: start the API server after setup
 - `--port <port>`: set server port (default: `8000`)
 
 Example:
 
 ```bash
-scripts/install-mac.sh --run --port 8001
+scripts/install-mac.sh --backend voxtral --run --port 8001
 ```
 
 ## Chatterbox Alternative (Drop-In API)
@@ -48,13 +57,13 @@ scripts/install-mac.sh --run --port 8001
 You can run a Chatterbox-backed API that keeps the same endpoint contract as the Voxtral server (`/v1/audio/speech`, `/v1/voxtral/speech`, `/v1/voxtral/transcript`).
 
 ```bash
-scripts/install-chatterbox.sh --run --port 8001
+scripts/install-mac.sh --backend chatterbox --run --port 8001
 ```
 
 This starts:
 
 ```bash
-.venv-chatterbox/bin/python -m uvicorn server_chatterbox:app --host 0.0.0.0 --port 8001 --reload
+.venv-chatterbox/bin/tts --backend chatterbox --host 0.0.0.0 --port 8001 --reload
 ```
 
 Compatibility notes:
