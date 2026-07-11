@@ -357,11 +357,13 @@ def create_app(
     engine: TTSBackend,
     voice_response_model: Any,
     version: str = "1.0.0",
+    route_prefix: str = "voxtral",
     openai_request_model: type[BaseModel] = OpenAISpeechRequest,
     extended_request_model: type[BaseModel] = VoxtralExtendedRequest,
 ) -> FastAPI:
     app = FastAPI(title=title, version=version)
     aligner = FasterWhisperAligner()
+    route_root = f"/v1/{route_prefix}"
 
     def get_engine() -> TTSBackend:
         return engine
@@ -369,7 +371,7 @@ def create_app(
     def get_aligner() -> FasterWhisperAligner:
         return aligner
 
-    @app.get("/v1/voxtral/voices", response_model=voice_response_model)
+    @app.get(f"{route_root}/voices", response_model=voice_response_model)
     async def list_voices(engine=Depends(get_engine)):
         return engine.list_voices()
 
@@ -403,7 +405,7 @@ def create_app(
             actual_output_path, media_type=media_type, filename=response_name
         )
 
-    @app.post("/v1/voxtral/speech")
+    @app.post(f"{route_root}/speech")
     async def voxtral_dedicated_speech(
         request: extended_request_model, engine=Depends(get_engine)
     ):
@@ -431,7 +433,7 @@ def create_app(
             actual_output_path, media_type=media_type, filename=response_name
         )
 
-    @app.post("/v1/voxtral/transcript", response_model=VoxtralTranscriptResponse)
+    @app.post(f"{route_root}/transcript", response_model=VoxtralTranscriptResponse)
     async def voxtral_generate_transcript(
         request: VoxtralTranscriptRequest,
         transcript_aligner=Depends(get_aligner),
@@ -479,7 +481,7 @@ def create_app(
             "sentences": transcript["sentences"],
         }
 
-    @app.get("/v1/voxtral/transcript/{lesson_id}", response_model=TranscriptDocument)
+    @app.get(f"{route_root}/transcript/{{lesson_id}}", response_model=TranscriptDocument)
     async def voxtral_get_transcript(lesson_id: str):
         transcripts_dir = "generated_lessons"
         transcript_path = _find_transcript_by_lesson_id(lesson_id, transcripts_dir)

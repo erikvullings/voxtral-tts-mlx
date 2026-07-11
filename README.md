@@ -6,9 +6,19 @@ Current state:
 
 - `server_voxtral.py` provides the Voxtral-backed entrypoint.
 - `server_chatterbox.py` provides the Chatterbox-backed entrypoint.
-- `api_shared.py` now owns the shared request/response models, transcript alignment, and HTTP route factory.
+- `server_omnivoice.py`, `server_kugelaudio.py`, `server_higgs.py`, and `server_moss.py` provide additional mlx-audio backends.
+- `api_shared.py` owns the shared request/response models, transcript alignment, and HTTP route factory.
 
-This is the first step in refactoring the project from a Voxtral-specific API into a more generic multi-model MLX TTS API.
+This is a multi-model MLX TTS API with one shared HTTP layer and backend-specific synthesis adapters.
+
+## Supported Backends
+
+- `voxtral`: preset voices only, no raw voice cloning
+- `chatterbox`: voice cloning from local reference audio
+- `omnivoice`: zero-shot voice cloning from local reference audio
+- `kugelaudio`: preset voices only (`default`, `warm`, `clear`)
+- `higgs`: zero-shot voice cloning via `ref_audio` or `references[]`
+- `moss`: voice cloning and continuation via `ref_audio`, `ref_text`, or `prompt_audio_codes`
 
 Open the browser at [http://localhost:8000/docs](http://localhost:8000/docs).
 
@@ -24,9 +34,18 @@ Chatterbox entrypoint:
 uv run tts --backend chatterbox --host 0.0.0.0 --port 8001 --reload
 ```
 
+Other mlx-audio backends:
+
+```bash
+uv run tts --backend omnivoice --host 0.0.0.0 --port 8002 --reload
+uv run tts --backend kugelaudio --host 0.0.0.0 --port 8003 --reload
+uv run tts --backend higgs --host 0.0.0.0 --port 8004 --reload
+uv run tts --backend moss --host 0.0.0.0 --port 8005 --reload
+```
+
 CLI options:
 
-- `--backend voxtral|chatterbox`
+- `--backend voxtral|chatterbox|omnivoice|kugelaudio|higgs|moss`
 - `--host <host>`
 - `--port <port>`
 - `--reload`
@@ -42,7 +61,7 @@ scripts/install-mac.sh
 
 Optional flags:
 
-- `--backend voxtral|chatterbox`: select backend explicitly (otherwise interactive prompt)
+- `--backend voxtral|chatterbox|omnivoice|kugelaudio|higgs|moss`: select backend explicitly (otherwise interactive prompt)
 - `--run`: start the API server after setup
 - `--port <port>`: set server port (default: `8000`)
 
@@ -76,6 +95,71 @@ Compatibility notes:
 - Speed is supported via `speed` on both speech endpoints. For Chatterbox, values below `1.0` now apply a stronger slowdown curve (for example `0.9` is noticeably slower).
 - Transcript endpoints remain unchanged and still use `faster-whisper` alignment.
 - Chatterbox runs in an isolated `.venv-chatterbox` so Voxtral dependencies stay unchanged.
+
+## Additional MLX-Audio Backends
+
+All of these backends use the same shared HTTP layer in `api_shared.py`, but they expose their own route prefixes:
+
+- `omnivoice` exposes `/v1/omnivoice/voices`, `/v1/omnivoice/speech`, and `/v1/omnivoice/transcript`
+- `kugelaudio` exposes `/v1/kugelaudio/voices`, `/v1/kugelaudio/speech`, and `/v1/kugelaudio/transcript`
+- `higgs` exposes `/v1/higgs/voices`, `/v1/higgs/speech`, and `/v1/higgs/transcript`
+- `moss` exposes `/v1/moss/voices`, `/v1/moss/speech`, and `/v1/moss/transcript`
+
+Voice support:
+
+- `omnivoice`: zero-shot cloning from local WAV reference audio via `voice_reference_path` or `ref_audio`
+- `kugelaudio`: preset voices only, with `default`, `warm`, and `clear`
+- `higgs`: zero-shot cloning from `ref_audio` or `references[]`; `ref_text` improves fidelity
+- `moss`: zero-shot cloning from `ref_audio` / `ref_text`, plus continuation via `prompt_audio_codes`
+
+Quick examples:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/omnivoice/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Hallo, dit is een OmniVoice sample.",
+    "voice_reference_path": "voices/sample.wav",
+    "ref_text": "Hallo, ik ben de referentiestem.",
+    "language": "nl",
+    "output_filename": "omnivoice_sample.mp3"
+  }'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/kugelaudio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Hallo, dit is een KugelAudio sample.",
+    "voice_reference_path": "warm",
+    "language": "nl",
+    "output_filename": "kugelaudio_sample.mp3"
+  }'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/higgs/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Hello, this is a Higgs Audio sample.",
+    "voice_reference_path": "voices/sample.wav",
+    "ref_text": "This is the reference transcript.",
+    "language": "en",
+    "output_filename": "higgs_sample.mp3"
+  }'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/moss/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "MOSS-TTS supports cloning from a local reference clip.",
+    "voice_reference_path": "voices/sample.wav",
+    "ref_text": "This is the reference transcript.",
+    "language": "English",
+    "output_filename": "moss_sample.mp3"
+  }'
+```
 
 ### Chatterbox Prosody Markup
 
@@ -117,7 +201,7 @@ brew install rubberband
 - Linux and Windows are not supported by this repository as-is.
 - Python `>=3.14` is supported.
 - The project is being refactored toward a generic MLX TTS API with multiple backend adapters.
-- The current shared seam is `api_shared.py`; backend-specific synthesis remains in `server_voxtral.py` and `server_chatterbox.py`.
+- The current shared seam is `api_shared.py`; backend-specific synthesis lives in `server_voxtral.py`, `server_chatterbox.py`, `server_omnivoice.py`, `server_kugelaudio.py`, `server_higgs.py`, and `server_moss.py`.
 - Audio export uses `soundfile` directly (no `pydub`).
 - If MP3 encoding is not available in the local `libsndfile` build, the API falls back to WAV output.
 - Speed adjustment uses `pyrubberband` (Rubber Band Library) for pitch-preserving time-stretch.

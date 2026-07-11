@@ -8,6 +8,10 @@ import uvicorn
 BACKEND_APPS = {
     "voxtral": "server_voxtral:app",
     "chatterbox": "server_chatterbox:app",
+    "omnivoice": "server_omnivoice:app",
+    "kugelaudio": "server_kugelaudio:app",
+    "higgs": "server_higgs:app",
+    "moss": "server_moss:app",
 }
 
 

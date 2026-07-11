@@ -34,4 +34,9 @@ py-modules = [
     "server",
     "server_voxtral",
     "server_chatterbox",
+    "server_mlx_audio",
+    "server_omnivoice",
+    "server_kugelaudio",
+    "server_higgs",
+    "server_moss",
 ]
