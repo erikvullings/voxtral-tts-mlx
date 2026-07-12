@@ -147,6 +147,31 @@ app = create_app(
     route_prefix="omnivoice",
     openai_request_model=OmniVoiceOpenAISpeechRequest,
     extended_request_model=OmniVoiceSpeechRequest,
+    backend_capabilities={
+        "model": RealOmniVoiceEngine.MODEL_ID,
+        "voiceCloning": {
+            "supported": True,
+            "inputs": ["voice_reference_path", "ref_audio"],
+            "referenceAudio": {
+                "required": True,
+                "notes": "Local WAV reference is required for cloning.",
+            },
+            "referenceText": {
+                "supported": True,
+                "required": False,
+                "notes": "ref_text is optional but recommended for better transfer.",
+            },
+        },
+        "ssmlProsody": {
+            "tagParsing": False,
+            "supportedTags": [],
+            "notes": "No SSML tag parser is implemented in this adapter.",
+        },
+        "languageConditioning": {
+            "apiDefaultLanguage": None,
+            "notes": "Language/lang_code are forwarded when provided; model defaults apply otherwise.",
+        },
+    },
 )
 
 

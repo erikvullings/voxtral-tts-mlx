@@ -6,6 +6,7 @@ from typing import Any, Optional, Protocol, cast
 from pydantic import BaseModel
 
 from api_shared import OpenAISpeechRequest, VoxtralExtendedRequest, create_app
+from request_normalizer import build_higgs_tokens, build_stage_directions, normalize_request_text
 from server_mlx_audio import (
     collect_generation_audio,
     resolve_reference_audio_path,
@@ -28,13 +29,18 @@ class HiggsOpenAISpeechRequest(OpenAISpeechRequest):
     ref_audio: Optional[str] = None
     ref_text: Optional[str] = None
     references: list[HiggsReference] | None = None
-    max_new_tokens: int = 2048
+    max_new_tokens: int | None = None
     temperature: float = 1.0
     top_p: float | None = 0.95
     top_k: int | None = 50
     seed: int | None = None
     fade_in_ms: float = 30.0
     fade_out_ms: float = 15.0
+    emotion: str | list[str] | None = None
+    style: str | list[str] | None = None
+    sfx: str | list[str] | None = None
+    prosody: str | list[str] | None = None
+    stage_directions: str | list[str] | None = None
 
     model_config = {
         "json_schema_extra": {
@@ -60,13 +66,18 @@ class HiggsSpeechRequest(VoxtralExtendedRequest):
     ref_audio: Optional[str] = None
     ref_text: Optional[str] = None
     references: list[HiggsReference] | None = None
-    max_new_tokens: int = 2048
+    max_new_tokens: int | None = None
     temperature: float = 1.0
     top_p: float | None = 0.95
     top_k: int | None = 50
     seed: int | None = None
     fade_in_ms: float = 30.0
     fade_out_ms: float = 15.0
+    emotion: str | list[str] | None = None
+    style: str | list[str] | None = None
+    sfx: str | list[str] | None = None
+    prosody: str | list[str] | None = None
+    stage_directions: str | list[str] | None = None
 
     model_config = {
         "json_schema_extra": {
@@ -130,6 +141,21 @@ class RealHiggsAudioEngine:
             )
         return normalized
 
+    @staticmethod
+    def _auto_max_new_tokens(text: str, requested: Any, references: list[dict[str, Any]]) -> int:
+        if requested is not None:
+            try:
+                value = int(requested)
+                return max(512, min(8192, value))
+            except (TypeError, ValueError):
+                pass
+
+        words = len([w for w in text.replace("\n", " ").split(" ") if w.strip()])
+        estimated = int(words * 6.0) + 1200
+        if references:
+            estimated += 300
+        return max(1400, min(8192, estimated))
+
     def synthesize(
         self,
         text: str,
@@ -138,6 +164,17 @@ class RealHiggsAudioEngine:
         **kwargs: Any,
     ) -> str:
         model = self._load_model()
+
+        prepared_text = normalize_request_text(
+            text,
+            prefix_tokens=build_higgs_tokens(
+                emotion=kwargs.get("emotion"),
+                style=kwargs.get("style"),
+                sfx=kwargs.get("sfx"),
+                prosody=kwargs.get("prosody"),
+            ),
+            stage_directions=build_stage_directions(kwargs.get("stage_directions")),
+        )
 
         references = self._normalize_references(kwargs.get("references"))
         ref_audio = kwargs.get("ref_audio")
@@ -154,12 +191,18 @@ class RealHiggsAudioEngine:
                     "Higgs Audio voice cloning requires a local reference WAV file or references[]."
                 )
 
+        max_new_tokens = self._auto_max_new_tokens(
+            prepared_text,
+            kwargs.get("max_new_tokens"),
+            references,
+        )
+
         results = model.generate(
-            text=text,
+            text=prepared_text,
             ref_audio=ref_audio,
             ref_text=ref_text,
             references=references or None,
-            max_new_tokens=int(kwargs.get("max_new_tokens", 2048)),
+            max_new_tokens=max_new_tokens,
             max_new_frames=kwargs.get("max_new_frames"),
             max_tokens=kwargs.get("max_tokens"),
             temperature=float(kwargs.get("temperature", 1.0)),
@@ -184,6 +227,96 @@ app = create_app(
     route_prefix="higgs",
     openai_request_model=HiggsOpenAISpeechRequest,
     extended_request_model=HiggsSpeechRequest,
+    backend_capabilities={
+        "model": RealHiggsAudioEngine.MODEL_ID,
+        "voiceCloning": {
+            "supported": True,
+            "inputs": ["voice_reference_path", "ref_audio", "references"],
+            "referenceAudio": {
+                "required": True,
+                "notes": "Provide ref_audio or references[] for zero-shot cloning.",
+            },
+            "referenceText": {
+                "supported": True,
+                "required": False,
+                "notes": "ref_text improves identity/prosody stability.",
+            },
+        },
+        "ssmlProsody": {
+            "tagParsing": False,
+            "supportedTags": [],
+            "notes": "SSML XML tags are not parsed by this adapter.",
+        },
+        "tokenControls": {
+            "format": "<|category:value|>",
+            "emotion": [
+                "elation",
+                "amusement",
+                "enthusiasm",
+                "determination",
+                "pride",
+                "contentment",
+                "affection",
+                "relief",
+                "contemplation",
+                "confusion",
+                "surprise",
+                "awe",
+                "longing",
+                "arousal",
+                "anger",
+                "fear",
+                "disgust",
+                "bitterness",
+                "sadness",
+                "shame",
+                "helplessness",
+            ],
+            "style": ["singing", "shouting", "whispering"],
+            "sfx": [
+                "cough",
+                "laughter",
+                "crying",
+                "screaming",
+                "burping",
+                "humming",
+                "sigh",
+                "sniff",
+                "sneeze",
+            ],
+            "prosody": [
+                "speed_very_slow",
+                "speed_slow",
+                "speed_fast",
+                "speed_very_fast",
+                "pause",
+                "long_pause",
+                "pitch_low",
+                "pitch_high",
+                "expressive_high",
+                "expressive_low",
+            ],
+            "examples": [
+                "<|emotion:elation|>",
+                "<|style:whispering|>",
+                "<|sfx:laughter|> haha",
+                "<|prosody:pause|>",
+            ],
+        },
+        "languageConditioning": {
+            "apiDefaultLanguage": None,
+            "notes": "Language is optional in this adapter and not required for synthesis.",
+        },
+        "generationBudgeting": {
+            "maxNewTokens": {
+                "clientConfigRequired": False,
+                "auto": True,
+                "defaultPolicy": "auto-by-input-length-with-reference-bias",
+                "clampRange": [1400, 8192],
+                "overrideField": "max_new_tokens",
+            }
+        },
+    },
 )
 
 

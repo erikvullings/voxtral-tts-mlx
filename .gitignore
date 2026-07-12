@@ -11,3 +11,6 @@ wheels/
 .venv-chatterbox
 generated_lessons
 jasper.wav
+.hf-cache
+audio_tests
+.DS_Store

@@ -9,11 +9,38 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 
+def _load_local_env_file() -> None:
+    """Load simple KEY=VALUE pairs from .env into process env if unset."""
+    env_path = os.path.join(os.getcwd(), ".env")
+    if not os.path.isfile(env_path):
+        return
+
+    try:
+        with open(env_path, "r", encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip("\"'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        # Non-fatal: explicit shell env variables still work.
+        return
+
+
+_load_local_env_file()
+
+
 class OpenAISpeechRequest(BaseModel):
     model: str = "voxtral"
     input: str
     voice: str = "nl_female"
-    language: str = "nl"
+    language: Optional[str] = None
     response_format: str = "mp3"
     speed: float = 1.0
 
@@ -34,7 +61,7 @@ class OpenAISpeechRequest(BaseModel):
 class VoxtralExtendedRequest(BaseModel):
     text: str
     voice_reference_path: Optional[str] = "nl_female"
-    language: str = "nl"
+    language: Optional[str] = None
     emotion: str = "neutral"
     nfe_steps: int = 16
     temperature: float = 0.7
@@ -142,6 +169,210 @@ class TTSBackend(Protocol):
     ) -> str: ...
 
     def list_voices(self) -> Any: ...
+
+
+def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int, *, min_value: int, max_value: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(min_value, min(max_value, value))
+
+
+def _replace_markdown_emphasis(text: str, *, supports_ssml_emphasis: bool) -> str:
+    def _bold_repl(match: re.Match[str]) -> str:
+        content = match.group(2).strip()
+        if not content:
+            return ""
+        if supports_ssml_emphasis:
+            return f"<emphasis>{content}</emphasis>"
+        return content
+
+    def _italic_repl(match: re.Match[str]) -> str:
+        content = match.group(1).strip()
+        if not content:
+            return ""
+        if supports_ssml_emphasis:
+            return f"<emphasis>{content}</emphasis>"
+        return content
+
+    converted = re.sub(r"(\*\*|__)(.+?)\1", _bold_repl, text, flags=re.DOTALL)
+    converted = re.sub(
+        r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)",
+        _italic_repl,
+        converted,
+        flags=re.DOTALL,
+    )
+    converted = re.sub(
+        r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)",
+        _italic_repl,
+        converted,
+        flags=re.DOTALL,
+    )
+    return converted
+
+
+def _replace_newlines_with_breaks(
+    text: str, *, line_ms: int, paragraph_ms: int, supports_ssml_breaks: bool
+) -> str:
+    if not supports_ssml_breaks:
+        return text
+
+    paragraph_tag = f' <break time="{paragraph_ms}ms"/> '
+    line_tag = f' <break time="{line_ms}ms"/> '
+
+    with_paragraph_breaks = re.sub(r"\n\s*\n+", paragraph_tag, text)
+    with_line_breaks = re.sub(r"\n", line_tag, with_paragraph_breaks)
+    return with_line_breaks
+
+
+def _preprocess_tts_text(
+    text: str,
+    *,
+    supports_ssml_emphasis: bool,
+    supports_ssml_breaks: bool,
+) -> str:
+    if not _env_flag("TTS_MARKDOWN_PROSODY_ENABLED", True):
+        return text
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    line_ms = _env_int("TTS_MARKDOWN_LINE_BREAK_MS", 350, min_value=50, max_value=5000)
+    paragraph_ms = _env_int(
+        "TTS_MARKDOWN_PARAGRAPH_BREAK_MS",
+        900,
+        min_value=100,
+        max_value=8000,
+    )
+
+    out = _replace_markdown_emphasis(
+        normalized, supports_ssml_emphasis=supports_ssml_emphasis
+    )
+    out = _replace_newlines_with_breaks(
+        out,
+        line_ms=line_ms,
+        paragraph_ms=paragraph_ms,
+        supports_ssml_breaks=supports_ssml_breaks,
+    )
+    return out
+
+
+def _base_capabilities(
+    *,
+    backend: str,
+    supports_ssml_emphasis: bool,
+    supports_ssml_breaks: bool,
+) -> dict[str, Any]:
+    ssml_tags: list[str] = []
+    if supports_ssml_breaks:
+        ssml_tags.append("<break time=\"Xms\"/>")
+    if supports_ssml_emphasis:
+        ssml_tags.append("<emphasis>...</emphasis>")
+
+    return {
+        "backend": backend,
+        "voiceCloning": {
+            "supported": False,
+            "notes": "Backend-specific; see endpoint payload overrides.",
+        },
+        "ssmlProsody": {
+            "tagParsing": bool(ssml_tags),
+            "supportedTags": ssml_tags,
+            "notes": (
+                "Adapter-level parsing is limited to listed tags. "
+                "Some models also support token-based prosody controls."
+            ),
+        },
+        "markdownProsody": {
+            "enabled": _env_flag("TTS_MARKDOWN_PROSODY_ENABLED", True),
+            "lineBreakMs": _env_int(
+                "TTS_MARKDOWN_LINE_BREAK_MS", 350, min_value=50, max_value=5000
+            ),
+            "paragraphBreakMs": _env_int(
+                "TTS_MARKDOWN_PARAGRAPH_BREAK_MS",
+                900,
+                min_value=100,
+                max_value=8000,
+            ),
+            "conversions": {
+                "boldItalicToEmphasis": supports_ssml_emphasis,
+                "singleNewlineToBreak": supports_ssml_breaks,
+                "paragraphToLongBreak": supports_ssml_breaks,
+            },
+            "environment": {
+                "enabledFlag": "TTS_MARKDOWN_PROSODY_ENABLED",
+                "lineBreakMs": "TTS_MARKDOWN_LINE_BREAK_MS",
+                "paragraphBreakMs": "TTS_MARKDOWN_PARAGRAPH_BREAK_MS",
+            },
+        },
+        "languageConditioning": {
+            "apiDefaultLanguage": None,
+            "notes": "Language is optional at API level. Backend behavior differs.",
+        },
+    }
+
+
+def _build_capabilities_payload(
+    *,
+    route_prefix: str,
+    engine: TTSBackend,
+    supports_ssml_emphasis: bool,
+    supports_ssml_breaks: bool,
+    backend_capabilities: dict[str, Any] | None,
+) -> dict[str, Any]:
+    capabilities = _base_capabilities(
+        backend=route_prefix,
+        supports_ssml_emphasis=supports_ssml_emphasis,
+        supports_ssml_breaks=supports_ssml_breaks,
+    )
+
+    if backend_capabilities:
+        capabilities = _deep_merge_dict(capabilities, backend_capabilities)
+
+    voices: Any
+    try:
+        voices = engine.list_voices()
+    except Exception as exc:
+        voices = {
+            "error": str(exc),
+        }
+
+    capabilities["voices"] = voices
+    capabilities["routes"] = {
+        "openaiSpeech": "/v1/audio/speech",
+        "voices": f"/v1/{route_prefix}/voices",
+        "speech": f"/v1/{route_prefix}/speech",
+        "transcriptPost": f"/v1/{route_prefix}/transcript",
+        "transcriptGet": f"/v1/{route_prefix}/transcript/{{lesson_id}}",
+        "capabilities": [
+            "/v1/capabilities",
+            f"/v1/{route_prefix}/capabilities",
+        ],
+    }
+    return capabilities
 
 
 class FasterWhisperAligner:
@@ -360,6 +591,9 @@ def create_app(
     route_prefix: str = "voxtral",
     openai_request_model: type[BaseModel] = OpenAISpeechRequest,
     extended_request_model: type[BaseModel] = VoxtralExtendedRequest,
+    supports_ssml_emphasis: bool = False,
+    supports_ssml_breaks: bool = False,
+    backend_capabilities: dict[str, Any] | None = None,
 ) -> FastAPI:
     app = FastAPI(title=title, version=version)
     aligner = FasterWhisperAligner()
@@ -375,6 +609,26 @@ def create_app(
     async def list_voices(engine=Depends(get_engine)):
         return engine.list_voices()
 
+    @app.get("/v1/capabilities")
+    async def get_capabilities_root(engine=Depends(get_engine)):
+        return _build_capabilities_payload(
+            route_prefix=route_prefix,
+            engine=engine,
+            supports_ssml_emphasis=supports_ssml_emphasis,
+            supports_ssml_breaks=supports_ssml_breaks,
+            backend_capabilities=backend_capabilities,
+        )
+
+    @app.get(f"{route_root}/capabilities")
+    async def get_capabilities_scoped(engine=Depends(get_engine)):
+        return _build_capabilities_payload(
+            route_prefix=route_prefix,
+            engine=engine,
+            supports_ssml_emphasis=supports_ssml_emphasis,
+            supports_ssml_breaks=supports_ssml_breaks,
+            backend_capabilities=backend_capabilities,
+        )
+
     @app.post("/v1/audio/speech")
     async def openai_compatible_speech(
         request: openai_request_model, engine=Depends(get_engine)
@@ -384,9 +638,15 @@ def create_app(
         output_path = f"generated_lessons/lesson_{hash(request.input)}.{output_ext}"
         os.makedirs("generated_lessons", exist_ok=True)
 
+        prepared_text = _preprocess_tts_text(
+            request.input,
+            supports_ssml_emphasis=supports_ssml_emphasis,
+            supports_ssml_breaks=supports_ssml_breaks,
+        )
+
         try:
             actual_output_path = engine.synthesize(
-                text=request.input,
+                text=prepared_text,
                 voice_path=request.voice,
                 output_path=output_path,
                 **_request_kwargs(
@@ -412,9 +672,15 @@ def create_app(
         output_path = f"generated_lessons/{request.output_filename}"
         os.makedirs("generated_lessons", exist_ok=True)
 
+        prepared_text = _preprocess_tts_text(
+            request.text,
+            supports_ssml_emphasis=supports_ssml_emphasis,
+            supports_ssml_breaks=supports_ssml_breaks,
+        )
+
         try:
             actual_output_path = engine.synthesize(
-                text=request.text,
+                text=prepared_text,
                 voice_path=request.voice_reference_path,
                 output_path=output_path,
                 **_request_kwargs(

@@ -12,6 +12,11 @@ BACKEND_APPS = {
     "kugelaudio": "server_kugelaudio:app",
     "higgs": "server_higgs:app",
     "moss": "server_moss:app",
+    "vibevoice": "server_vibevoice_7b_coreml:app",
+    "vibevoice-1.5b+coreml": "server_vibevoice_15b_coreml:app",
+    "vibevoice-1.5b-coreml": "server_vibevoice_15b_no_coreml:app",
+    "vibevoice-7b+coreml": "server_vibevoice_7b_coreml:app",
+    "vibevoice-7b-coreml": "server_vibevoice_7b_no_coreml:app",
 }
 
 

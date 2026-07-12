@@ -311,6 +311,27 @@ app = create_app(
     title="Voxtral TTS Translation Layer",
     engine=voxtral_engine,
     voice_response_model=list[str],
+    supports_ssml_breaks=True,
+    backend_capabilities={
+        "model": RealVoxtralEngine.MLX_MODEL_ID,
+        "voiceCloning": {
+            "supported": False,
+            "notes": "Preset voice IDs only; local reference audio is not supported.",
+        },
+        "voiceSelection": {
+            "type": "preset",
+            "presets": sorted(RealVoxtralEngine.PRESET_VOICES),
+        },
+        "ssmlProsody": {
+            "tagParsing": True,
+            "supportedTags": ["<break time=\"Xms\"/>", "<break time=\"Xs\"/>"] ,
+            "notes": "Break tags are parsed by the adapter. Emphasis tags are not interpreted.",
+        },
+        "languageConditioning": {
+            "apiDefaultLanguage": None,
+            "notes": "Language field is accepted but this adapter does not require it for synthesis.",
+        },
+    },
 )
 
 

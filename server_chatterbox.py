@@ -49,11 +49,13 @@ from api_shared import (
 class ChatterboxOpenAISpeechRequest(OpenAISpeechRequest):
     exaggeration: float = 0.5
     cfg_weight: float = 0.5
+    max_new_tokens: int | None = None
 
 
 class ChatterboxVoxtralExtendedRequest(VoxtralExtendedRequest):
     exaggeration: float = 0.5
     cfg_weight: float = 0.5
+    max_new_tokens: int | None = None
 
 
 class RealChatterboxEngine:
@@ -268,7 +270,7 @@ class RealChatterboxEngine:
         """Split text on break tags into (segment_text, pause_seconds_after)."""
         normalized = RealChatterboxEngine._apply_emphasis_markup(text)
         break_pattern = re.compile(
-            r"<break\\s+time=\"(?P<value>\\d+(?:\\.\\d+)?)\\s*(?P<unit>ms|s)\"\\s*/?>",
+            r"<break\s+time=\"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>ms|s)\"\s*/?>",
             flags=re.IGNORECASE,
         )
 
@@ -314,6 +316,19 @@ class RealChatterboxEngine:
             chunks.append(current)
 
         return chunks
+
+    @staticmethod
+    def _auto_max_new_tokens(text: str, requested: Any) -> int:
+        if requested is not None:
+            try:
+                value = int(requested)
+                return max(120, min(700, value))
+            except (TypeError, ValueError):
+                pass
+
+        words = len([w for w in text.split(" ") if w.strip()])
+        estimated = int(words * 4.0) + 160
+        return max(220, min(650, estimated))
 
     @staticmethod
     def _generate_chunk_with_cap(
@@ -404,13 +419,12 @@ class RealChatterboxEngine:
     ) -> str:
         model = self._load_model()
 
-        language = str(kwargs.get("language") or "nl").lower()
+        language = str(kwargs.get("language") or "").lower()
         speed = float(kwargs.get("speed", 1.0))
         temperature = float(kwargs.get("temperature", 0.8))
-        max_new_tokens = int(kwargs.get("max_new_tokens", 360))
+        max_new_tokens_override = kwargs.get("max_new_tokens")
         cfg_weight = float(kwargs.get("cfg_weight", 0.5))
         exaggeration = float(kwargs.get("exaggeration", 0.5))
-        max_new_tokens = max(120, min(600, max_new_tokens))
         temperature = max(0.05, min(5.0, temperature))
         cfg_weight = max(0.0, min(1.0, cfg_weight))
         exaggeration = max(0.0, min(2.0, exaggeration))
@@ -427,6 +441,10 @@ class RealChatterboxEngine:
             if segment_text:
                 chunks = self._split_text_chunks(segment_text)
                 for chunk_idx, chunk in enumerate(chunks):
+                    max_new_tokens = self._auto_max_new_tokens(
+                        chunk,
+                        max_new_tokens_override,
+                    )
                     wav = self._generate_chunk_with_cap(
                         model,
                         text=chunk,
@@ -470,6 +488,45 @@ app = create_app(
     voice_response_model=list[VoiceOption],
     openai_request_model=ChatterboxOpenAISpeechRequest,
     extended_request_model=ChatterboxVoxtralExtendedRequest,
+    supports_ssml_emphasis=True,
+    supports_ssml_breaks=True,
+    backend_capabilities={
+        "model": "chatterbox-tts",
+        "voiceCloning": {
+            "supported": True,
+            "inputs": ["voice", "voice_reference_path"],
+            "referenceAudio": {
+                "required": False,
+                "notes": "If omitted, default alias resolves to voices/nl_female.wav.",
+            },
+            "referenceText": {
+                "supported": False,
+                "notes": "This adapter does not use ref_text for cloning.",
+            },
+        },
+        "ssmlProsody": {
+            "tagParsing": True,
+            "supportedTags": [
+                "<break time=\"Xms\"/>",
+                "<break time=\"Xs\"/>",
+                "<emphasis>...</emphasis>",
+            ],
+            "notes": "Emphasis is rendered with expressive punctuation/casing in adapter logic.",
+        },
+        "languageConditioning": {
+            "apiDefaultLanguage": None,
+            "notes": "Language is forwarded to tokenizer when provided; otherwise model defaults apply.",
+        },
+        "generationBudgeting": {
+            "maxNewTokens": {
+                "clientConfigRequired": False,
+                "auto": True,
+                "defaultPolicy": "auto-per-chunk-by-input-length",
+                "clampRange": [220, 650],
+                "overrideField": "max_new_tokens",
+            }
+        },
+    },
 )
 
 

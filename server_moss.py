@@ -4,6 +4,7 @@ import threading
 from typing import Any, Optional, Protocol, cast
 
 from api_shared import OpenAISpeechRequest, VoxtralExtendedRequest, create_app
+from request_normalizer import build_stage_directions, normalize_request_text
 from server_mlx_audio import (
     collect_generation_audio,
     resolve_reference_audio_path,
@@ -22,7 +23,7 @@ class MossOpenAISpeechRequest(OpenAISpeechRequest):
     ref_text: Optional[str] = None
     prompt_audio_codes: Any = None
     mode: str = "generation"
-    max_tokens: int = 4096
+    max_tokens: int | None = None
     tokens: int | None = None
     instruction: str | None = None
     quality: str | None = None
@@ -30,6 +31,8 @@ class MossOpenAISpeechRequest(OpenAISpeechRequest):
     ambient_sound: str | None = None
     language: str | None = None
     scene: str | None = None
+    stage_directions: str | list[str] | None = None
+    paragraph_pause_seconds: float | None = None
 
     model_config = {
         "json_schema_extra": {
@@ -53,7 +56,7 @@ class MossSpeechRequest(VoxtralExtendedRequest):
     ref_text: Optional[str] = None
     prompt_audio_codes: Any = None
     mode: str = "generation"
-    max_tokens: int = 4096
+    max_tokens: int | None = None
     tokens: int | None = None
     instruction: str | None = None
     quality: str | None = None
@@ -61,6 +64,8 @@ class MossSpeechRequest(VoxtralExtendedRequest):
     ambient_sound: str | None = None
     language: str | None = None
     scene: str | None = None
+    stage_directions: str | list[str] | None = None
+    paragraph_pause_seconds: float | None = None
 
     model_config = {
         "json_schema_extra": {
@@ -109,6 +114,19 @@ class RealMossTTSEngine:
             return resolved or value
         return value
 
+    @staticmethod
+    def _auto_max_tokens(text: str, requested: Any) -> int:
+        if requested is not None:
+            try:
+                value = int(requested)
+                return max(1024, min(8192, value))
+            except (TypeError, ValueError):
+                pass
+
+        words = len([w for w in text.replace("\n", " ").split(" ") if w.strip()])
+        estimated = int(words * 7.0) + 1800
+        return max(2200, min(8192, estimated))
+
     def synthesize(
         self,
         text: str,
@@ -117,6 +135,14 @@ class RealMossTTSEngine:
         **kwargs: Any,
     ) -> str:
         model = self._load_model()
+
+        prepared_text = normalize_request_text(
+            text,
+            stage_directions=build_stage_directions(kwargs.get("stage_directions")),
+            paragraph_pause_seconds=kwargs.get("paragraph_pause_seconds"),
+            paragraph_pause_format="[pause {seconds:.1f}s]",
+        )
+        max_tokens = self._auto_max_tokens(prepared_text, kwargs.get("max_tokens"))
 
         ref_audio = kwargs.get("ref_audio")
         if ref_audio is not None:
@@ -134,13 +160,13 @@ class RealMossTTSEngine:
                 )
 
         results = model.generate(
-            text=text,
+            text=prepared_text,
             ref_audio=ref_audio,
             ref_text=ref_text,
             prompt_audio_codes=prompt_audio_codes,
             mode=str(kwargs.get("mode", "generation")),
             stream=False,
-            max_tokens=int(kwargs.get("max_tokens", 4096)),
+            max_tokens=max_tokens,
             tokens=kwargs.get("tokens"),
             instruction=kwargs.get("instruction"),
             quality=kwargs.get("quality"),
@@ -164,6 +190,47 @@ app = create_app(
     route_prefix="moss",
     openai_request_model=MossOpenAISpeechRequest,
     extended_request_model=MossSpeechRequest,
+    backend_capabilities={
+        "model": RealMossTTSEngine.MODEL_ID,
+        "voiceCloning": {
+            "supported": True,
+            "inputs": ["voice_reference_path", "ref_audio", "prompt_audio_codes"],
+            "referenceAudio": {
+                "required": False,
+                "notes": "Provide ref_audio or prompt_audio_codes for cloning/continuation workflows.",
+            },
+            "referenceText": {
+                "supported": True,
+                "required": False,
+                "notes": "ref_text can improve cloning quality.",
+            },
+        },
+        "ssmlProsody": {
+            "tagParsing": False,
+            "supportedTags": [],
+            "notes": "No SSML XML tag parser is implemented in this adapter.",
+        },
+        "tokenControls": {
+            "pauseToken": {
+                "format": "[pause X.Ys]",
+                "example": "Hallo [pause 0.8s] hoe gaat het?",
+                "notes": "Explicit pause control is supported by model prompting.",
+            }
+        },
+        "languageConditioning": {
+            "apiDefaultLanguage": None,
+            "notes": "Language tags are optional but recommended for stronger multilingual synthesis.",
+        },
+        "generationBudgeting": {
+            "maxTokens": {
+                "clientConfigRequired": False,
+                "auto": True,
+                "defaultPolicy": "auto-by-input-length",
+                "clampRange": [2200, 8192],
+                "overrideField": "max_tokens",
+            }
+        },
+    },
 )
 
 

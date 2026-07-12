@@ -6,7 +6,7 @@ Current state:
 
 - `server_voxtral.py` provides the Voxtral-backed entrypoint.
 - `server_chatterbox.py` provides the Chatterbox-backed entrypoint.
-- `server_omnivoice.py`, `server_kugelaudio.py`, `server_higgs.py`, and `server_moss.py` provide additional mlx-audio backends.
+- `server_omnivoice.py`, `server_kugelaudio.py`, `server_higgs.py`, `server_moss.py`, and VibeVoice-MLX adapters provide additional backends.
 - `api_shared.py` owns the shared request/response models, transcript alignment, and HTTP route factory.
 
 This is a multi-model MLX TTS API with one shared HTTP layer and backend-specific synthesis adapters.
@@ -19,6 +19,11 @@ This is a multi-model MLX TTS API with one shared HTTP layer and backend-specifi
 - `kugelaudio`: preset voices only (`default`, `warm`, `clear`)
 - `higgs`: zero-shot voice cloning via `ref_audio` or `references[]`
 - `moss`: voice cloning and continuation via `ref_audio`, `ref_text`, or `prompt_audio_codes`
+- `vibevoice`: alias for `vibevoice-7b+coreml`
+- `vibevoice-1.5b+coreml`: VibeVoice MLX 1.5B with CoreML semantic encoder
+- `vibevoice-1.5b-coreml`: VibeVoice MLX 1.5B with semantic encoder disabled
+- `vibevoice-7b+coreml`: VibeVoice MLX 7B with CoreML semantic encoder (default)
+- `vibevoice-7b-coreml`: VibeVoice MLX 7B with semantic encoder disabled
 
 Open the browser at [http://localhost:8000/docs](http://localhost:8000/docs).
 
@@ -31,7 +36,7 @@ uv run tts --host 0.0.0.0 --port 8000 --reload
 Chatterbox entrypoint:
 
 ```bash
-uv run tts --backend chatterbox --host 0.0.0.0 --port 8001 --reload
+.venv-chatterbox/bin/python -m uvicorn server_chatterbox:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 Other mlx-audio backends:
@@ -41,11 +46,12 @@ uv run tts --backend omnivoice --host 0.0.0.0 --port 8002 --reload
 uv run tts --backend kugelaudio --host 0.0.0.0 --port 8003 --reload
 uv run tts --backend higgs --host 0.0.0.0 --port 8004 --reload
 uv run tts --backend moss --host 0.0.0.0 --port 8005 --reload
+uv run tts --backend vibevoice-7b+coreml --host 0.0.0.0 --port 8006 --reload
 ```
 
 CLI options:
 
-- `--backend voxtral|chatterbox|omnivoice|kugelaudio|higgs|moss`
+- `--backend voxtral|chatterbox|omnivoice|kugelaudio|higgs|moss|vibevoice|vibevoice-1.5b+coreml|vibevoice-1.5b-coreml|vibevoice-7b+coreml|vibevoice-7b-coreml`
 - `--host <host>`
 - `--port <port>`
 - `--reload`
@@ -71,9 +77,55 @@ Example:
 scripts/install-mac.sh --backend voxtral --run --port 8001
 ```
 
-## Chatterbox Alternative (Drop-In API)
+## Backend Compatibility Notes
 
-You can run a Chatterbox-backed API that keeps the same endpoint contract as the Voxtral server (`/v1/audio/speech`, `/v1/voxtral/speech`, `/v1/voxtral/transcript`).
+All backends share the same OpenAI-compatible endpoint (`POST /v1/audio/speech`) and a backend-specific route set (`/v1/<backend>/speech`, `/v1/<backend>/transcript`, `/v1/<backend>/voices`).
+
+General behavior:
+
+- `voice` (OpenAI route) and `voice_reference_path` (dedicated route) are the primary voice controls.
+- `language` is optional at the API layer (not forced to Dutch anymore).
+- `speed` is supported on all routes where the backend supports time scaling.
+- transcript generation remains shared through `faster-whisper` alignment.
+
+Capability discovery endpoint:
+
+- `GET /v1/capabilities`
+- `GET /v1/<backend>/capabilities`
+
+The capabilities payload includes:
+
+- voice cloning support and required/optional inputs
+- SSML/prosody support including exact supported tags when parser support exists
+- token-based prosody controls where applicable
+- language-conditioning behavior
+- current runtime voices (`engine.list_voices()` output)
+
+Unified request-normalizer pipeline:
+
+- Higgs, MOSS, and VibeVoice now pass request text through one shared normalizer utility (`request_normalizer.py`).
+- This keeps base text cleanup, token-prefix composition, stage-direction injection, and optional pause token formatting consistent across those backends.
+
+VibeVoice-MLX setup:
+
+```bash
+uv tool install --from git+https://github.com/gafiatulin/vibevoice-mlx vibevoice-mlx
+```
+
+No-install option:
+
+- You can vendor/copy the `vibevoice_mlx/` package into this repository root.
+- The adapter will automatically prefer `python -m vibevoice_mlx.e2e_pipeline` from local code.
+- It also supports using a local clone at `/tmp/vibevoice-mlx` via `uv run --directory`.
+
+The VibeVoice-MLX adapter uses CLI invocation under the hood and supports:
+
+- `gafiatulin/vibevoice-1.5b-mlx`
+- `gafiatulin/vibevoice-7b-mlx`
+- `--coreml-semantic` (or semantic disabled mode)
+- multi-speaker routing via `Speaker N:` transcript lines + `ref_audio`/`speaker_names`
+
+Chatterbox runs in an isolated environment because its dependency graph differs from the mlx-audio stack:
 
 ```bash
 scripts/install-mac.sh --backend chatterbox --run --port 8001
@@ -82,19 +134,8 @@ scripts/install-mac.sh --backend chatterbox --run --port 8001
 This starts:
 
 ```bash
-.venv-chatterbox/bin/tts --backend chatterbox --host 0.0.0.0 --port 8001 --reload
+.venv-chatterbox/bin/python -m uvicorn server_chatterbox:app --host 0.0.0.0 --port 8001 --reload
 ```
-
-Compatibility notes:
-
-- Request/response schema is shared through `api_shared.py`.
-- Voice selection works through `voice` (`/v1/audio/speech`) or `voice_reference_path` (`/v1/voxtral/speech`).
-- Built-in aliases: `nl_female` (default), `female`, `default`, and `nl_male`/`male` (mapped to `voices/jasper.wav` if present).
-- You can also pass a custom local WAV path or filename in `voices/`.
-- List available voices at runtime with `GET /v1/voxtral/voices`.
-- Speed is supported via `speed` on both speech endpoints. For Chatterbox, values below `1.0` now apply a stronger slowdown curve (for example `0.9` is noticeably slower).
-- Transcript endpoints remain unchanged and still use `faster-whisper` alignment.
-- Chatterbox runs in an isolated `.venv-chatterbox` so Voxtral dependencies stay unchanged.
 
 ## Additional MLX-Audio Backends
 
@@ -104,6 +145,7 @@ All of these backends use the same shared HTTP layer in `api_shared.py`, but the
 - `kugelaudio` exposes `/v1/kugelaudio/voices`, `/v1/kugelaudio/speech`, and `/v1/kugelaudio/transcript`
 - `higgs` exposes `/v1/higgs/voices`, `/v1/higgs/speech`, and `/v1/higgs/transcript`
 - `moss` exposes `/v1/moss/voices`, `/v1/moss/speech`, and `/v1/moss/transcript`
+- `vibevoice` exposes `/v1/vibevoice/voices`, `/v1/vibevoice/speech`, and `/v1/vibevoice/transcript`
 
 Voice support:
 
@@ -111,6 +153,35 @@ Voice support:
 - `kugelaudio`: preset voices only, with `default`, `warm`, and `clear`
 - `higgs`: zero-shot cloning from `ref_audio` or `references[]`; `ref_text` improves fidelity
 - `moss`: zero-shot cloning from `ref_audio` / `ref_text`, plus continuation via `prompt_audio_codes`
+- `vibevoice`: speaker-routing with 4 speaker slots and emotion-to-variant mapping
+
+## Voice Reference Guide (All Backends)
+
+Use your own reference voice clip like this:
+
+- put a WAV file in `voices/` (for example `voices/my_voice.wav`)
+- pass it as `voice_reference_path` on dedicated routes, or as `voice`/`ref_audio` on OpenAI-compatible routes (backend dependent)
+
+Reference usage by backend:
+
+- `voxtral`: no local reference cloning (preset speaker IDs only)
+- `kugelaudio`: no local reference cloning (preset voices only)
+- `chatterbox`: local reference WAV supported; `ref_text` is not required
+- `omnivoice`: local reference WAV supported; `ref_text` is optional but recommended for higher fidelity
+- `higgs`: local reference WAV and `references[]` supported; `ref_text` is optional but recommended
+- `moss`: local reference WAV supported; `ref_text` optional; continuation also supports `prompt_audio_codes`
+- `vibevoice`: use `voice_profile` + `segments[]` with `emotion` to route text to speaker slots; SSML emotion tags are not used
+
+Language parameter behavior:
+
+- `chatterbox`: `language` is used by the tokenizer when provided; if omitted, model defaults are used
+- `omnivoice`: `language` is forwarded when provided; if omitted, model defaults are used
+- `moss`: `language` is forwarded when provided; language tags are recommended for multilingual stability
+- `kugelaudio`: optional, but when provided it must be a 2-letter code such as `nl` or `en`
+- `voxtral`, `higgs`: current adapters do not require `language` for synthesis
+- `vibevoice`: language is optional and forwarded when provided
+
+This means Dutch is not globally assumed by the API. Set `language` explicitly when you want deterministic language conditioning on backends that use it.
 
 Quick examples:
 
@@ -161,19 +232,95 @@ curl -X POST http://127.0.0.1:8000/v1/moss/speech \
   }'
 ```
 
-### Chatterbox Prosody Markup
+## Prosody / SSML Support Matrix
 
-Chatterbox does not expose full SSML support in this wrapper, but the API supports two lightweight tags in `text`:
+- `chatterbox`: supports `<break .../>` and `<emphasis>...</emphasis>`
+- `voxtral`: supports `<break .../>` (no emphasis tag handling)
+- `omnivoice`: no SSML tag parsing in this adapter
+- `kugelaudio`: no SSML tag parsing in this adapter; adapter forwards `speaker_names`/`ref_audio` when provided
+- `higgs`: no SSML XML parser in adapter, but token-based controls are supported in prompt text
+- `moss`: no SSML XML parser in adapter, but explicit pause token control is supported in prompt text
+- `vibevoice`: no SSML tag parser in adapter; use speaker-routing and emotion variants
 
-- Pause tag: `<break time="500ms"/>` or `<break time="1.2s"/>` (clamped to max 3 seconds)
-- Emphasis tag: `<emphasis>belangrijk</emphasis>`
+VibeVoice control model:
 
-Example:
+- primary control is speaker routing, not SSML emotion tags
+- `segments[]` + `emotion` are mapped to 4 variant speaker slots
+- generated prompt format is `Speaker N: ...`
+- optional stage directions (for example `[excited]`) are prepended as a secondary cue
+- if the primary VibeVoice checkpoint fails to load for TTS, the backend automatically tries fallback model IDs
+
+Optional fallback override:
+
+```dotenv
+VIBEVOICE_MODEL_FALLBACKS=mlx-community/VibeVoice-bf16,mlx-community/VibeVoice-TTS-bf16
+```
+
+Example payload:
 
 ```json
 {
-  "text": "Welkom. <break time=\"700ms\"/> Dit is <emphasis>heel belangrijk</emphasis> voor de uitspraak.",
-  "voice_reference_path": "nl_female",
+  "text": "Welkom iedereen",
+  "voice_profile": "sarah",
+  "segments": [
+    {"text": "Welkom iedereen", "emotion": "calm"},
+    {"text": "Dit is fantastisch nieuws!", "emotion": "excited"}
+  ],
+  "use_stage_directions": true,
+  "language": "nl",
+  "output_filename": "vibevoice_sample.mp3"
+}
+```
+
+Higgs token controls (prompt-level):
+
+- format: `<|category:value|>`
+- emotion: `elation`, `amusement`, `enthusiasm`, `determination`, `pride`, `contentment`, `affection`, `relief`, `contemplation`, `confusion`, `surprise`, `awe`, `longing`, `arousal`, `anger`, `fear`, `disgust`, `bitterness`, `sadness`, `shame`, `helplessness`
+- style: `singing`, `shouting`, `whispering`
+- sound effects: `cough`, `laughter`, `crying`, `screaming`, `burping`, `humming`, `sigh`, `sniff`, `sneeze`
+- prosody: `speed_very_slow`, `speed_slow`, `speed_fast`, `speed_very_fast`, `pause`, `long_pause`, `pitch_low`, `pitch_high`, `expressive_high`, `expressive_low`
+
+Examples:
+
+- `<|emotion:elation|>`
+- `<|style:whispering|>`
+- `<|sfx:laughter|> haha`
+- `<|prosody:pause|>`
+
+MOSS pause control (prompt-level):
+
+- format: `[pause X.Ys]`
+- example: `Hallo [pause 0.8s] hoe gaat het?`
+
+## Markdown-to-Prosody Conversion
+
+When enabled, request text is preprocessed before synthesis on SSML-capable adapters:
+
+- `**bold**` and `*italic*` (also `__bold__` and `_italic_`) become `<emphasis>...</emphasis>` on backends with emphasis support
+- single newline becomes `<break time="...ms"/>`
+- blank line (paragraph break) becomes a longer `<break time="...ms"/>`
+
+Defaults were tuned for natural pacing:
+
+- single newline: `350ms`
+- paragraph break: `900ms`
+
+You can override these via `.env` (or shell env vars):
+
+```dotenv
+TTS_MARKDOWN_PROSODY_ENABLED=1
+TTS_MARKDOWN_LINE_BREAK_MS=350
+TTS_MARKDOWN_PARAGRAPH_BREAK_MS=900
+```
+
+An example template is provided in `.env.example`.
+
+Example (works best on `chatterbox`):
+
+```json
+{
+  "text": "Welkom.\\nDit is **heel belangrijk**.\\n\\nVolgende alinea.",
+  "voice_reference_path": "voices/my_voice.wav",
   "language": "nl",
   "speed": 0.9,
   "output_filename": "lesson_with_pauses.wav"
