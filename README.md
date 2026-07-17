@@ -210,7 +210,7 @@ All of these backends use the same shared HTTP layer in `api_shared.py`, but the
 Voice support:
 
 - `omnivoice`: zero-shot cloning from local WAV reference audio via `voice_reference_path` or `ref_audio`
-- `kugelaudio`: preset voices only, with `default`, `warm`, and `clear`
+- `kugelaudio`: preset voices (`default`, `warm`, `clear`) and custom voices via encoded .pt embeddings
 - `higgs`: zero-shot cloning from `ref_audio` or `references[]`; `ref_text` improves fidelity
 - `moss`: zero-shot cloning from `ref_audio` / `ref_text`, plus continuation via `prompt_audio_codes`
 - `vibevoice`: speaker-routing with 4 speaker slots and emotion-to-variant mapping
@@ -258,6 +258,7 @@ curl -X POST http://127.0.0.1:8000/v1/omnivoice/speech \
 ```
 
 ```bash
+# With preset voice
 curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
   -H "Content-Type: application/json" \
   -d '{
@@ -267,6 +268,17 @@ curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
     "output_filename": "kugelaudio_sample.mp3"
   }' \
   --output kugelaudio_sample.mp3
+
+# With custom voice (requires prior encoding)
+curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Welkom bij de Nederlandse les.",
+    "voice_reference_path": "anouk",
+    "language": "nl",
+    "output_filename": "kugelaudio_custom.mp3"
+  }' \
+  --output kugelaudio_custom.mp3
 ```
 
 ```bash
@@ -292,6 +304,64 @@ curl -X POST http://127.0.0.1:8000/v1/moss/speech \
     "language": "English",
     "output_filename": "moss_sample.mp3"
   }'
+```
+
+### KugelAudio Voice Encoding
+
+KugelAudio supports custom voice embeddings. To encode your own voice reference WAV files into speaker embeddings:
+
+**Step 1: Prepare voice reference clips**
+
+Place one or more `.wav` files in a folder (e.g., `my_voices/`). Each file should be:
+- 0.5 to 3 seconds of clean, single-speaker audio
+- Any sample rate (resampling happens automatically)
+- Minimal background noise for best results
+
+```bash
+# Example: organize reference files
+mkdir -p my_voices
+cp ~/Downloads/speaker1.wav my_voices/
+cp ~/Downloads/speaker2.wav my_voices/
+```
+
+**Step 2: Encode voices to `.pt` embeddings**
+
+Use the provided encoder script:
+
+```bash
+uv run python scripts/encode_voices_kugelaudio.py --input my_voices --output voices
+```
+
+This reads all `.wav` files, processes them through KugelAudioProcessor, extracts acoustic embeddings, and saves them as `.pt` files in the `voices/` directory. A `voices.json` manifest is also created.
+
+Output:
+- `voices/<speaker_name>.pt` — PyTorch archive with speaker embedding
+- `voices/voices.json` — metadata manifest
+
+First run will auto-download the KugelAudio model (~17GB, cached in `~/.cache/huggingface/hub/`).
+
+**Step 3: Use custom voices with the API**
+
+Once encoded, reference the voice by name (the filename stem without `.pt`):
+
+```bash
+curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Custom voice synthesis.",
+    "voice_reference_path": "speaker1",
+    "language": "nl",
+    "output_filename": "output.mp3"
+  }' \
+  --output output.mp3
+```
+
+**Discovering available voices**
+
+Query the capabilities endpoint to list all available voices (presets + encoded):
+
+```bash
+curl http://127.0.0.1:8003/v1/kugelaudio/capabilities | jq .voices
 ```
 
 ## Prosody / SSML Support Matrix
