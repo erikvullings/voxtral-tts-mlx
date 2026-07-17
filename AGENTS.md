@@ -9,11 +9,11 @@ This repository is a **Python FastAPI service for MLX-based TTS backends**. The 
 
 | Path | Purpose |
 |---|---|
-| `api_shared.py` | Shared request/response models, transcript aligner, helper utilities, and app factory |
-| `server_voxtral.py` | Voxtral-backed entrypoint and Voxtral engine implementation |
-| `server_chatterbox.py` | Chatterbox-backed entrypoint and Chatterbox engine implementation |
+| `src/api_shared.py` | Shared request/response models, transcript aligner, helper utilities, and app factory |
+| `src/server_voxtral.py` | Voxtral-backed entrypoint and Voxtral engine implementation |
+| `src/server_chatterbox.py` | Chatterbox-backed entrypoint and Chatterbox engine implementation |
 | `pyproject.toml` | Project metadata and dependencies (managed by **uv**) |
-| `main.py` | Entry-point stub (not actively used) |
+| `src/main.py` | CLI entry point |
 | `generated_lessons/` | Output: generated audio (`.mp3`) and transcripts (`.json`) |
 | `voices/` | Voice reference files for cloning |
 | `.github/workflows/macos-ci.yml` | macOS CI workflow |
@@ -25,13 +25,13 @@ Install dependencies via **uv** (Python package manager):
 
 ```bash
 uv sync                          # Install deps into .venv
-uv run tts --host 0.0.0.0 --port 8000 --reload
+tts --host 0.0.0.0 --port 8000 --reload
 ```
 
 Alternative entrypoint for local voice-cloning experiments:
 
 ```bash
-uv run tts --backend chatterbox --host 0.0.0.0 --port 8001 --reload
+tts --backend chatterbox --host 0.0.0.0 --port 8001 --reload
 ```
 
 The server runs with `reload=True`, so code changes are picked up automatically. Swagger UI is available at `/docs`.
@@ -53,7 +53,7 @@ When tests are added:
 - Use **pytest** (`uv add --dev pytest`).
 - Place files alongside the touched module or in a top-level `tests/` directory.
 - Name files `test_*.py` and functions `test_*`.
-- Prioritize coverage of shared route handlers in `api_shared.py` plus backend adapter behavior in `server_voxtral.py` and `server_chatterbox.py`.
+- Prioritize coverage of shared route handlers in `src/api_shared.py` plus backend adapter behavior in `src/server_voxtral.py` and `src/server_chatterbox.py`.
 
 ## Commit & Pull Request Guidelines
 

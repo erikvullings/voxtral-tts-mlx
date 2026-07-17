@@ -4,10 +4,10 @@ FastAPI wrapper around MLX-based (Apple) TTS backends with OpenAI-compatible end
 
 Current state:
 
-- `server_voxtral.py` provides the Voxtral-backed entrypoint.
-- `server_chatterbox.py` provides the Chatterbox-backed entrypoint.
-- `server_omnivoice.py`, `server_kugelaudio.py`, `server_higgs.py`, `server_moss.py`, and VibeVoice-MLX adapters provide additional backends.
-- `api_shared.py` owns the shared request/response models, transcript alignment, and HTTP route factory.
+- `src/server_voxtral.py` provides the Voxtral-backed entrypoint.
+- `src/server_chatterbox.py` provides the Chatterbox-backed entrypoint.
+- `src/server_omnivoice.py`, `src/server_kugelaudio.py`, `src/server_higgs.py`, `src/server_moss.py`, and VibeVoice-MLX adapters provide additional backends.
+- `src/api_shared.py` owns the shared request/response models, transcript alignment, and HTTP route factory.
 
 This is a multi-model MLX TTS API with one shared HTTP layer and backend-specific synthesis adapters.
 
@@ -21,16 +21,17 @@ This is a multi-model MLX TTS API with one shared HTTP layer and backend-specifi
 - `moss`: voice cloning and continuation via `ref_audio`, `ref_text`, or `prompt_audio_codes`
 - `vibevoice`: alias for `vibevoice-7b+coreml`
 - `vibevoice-1.5b+coreml`: VibeVoice MLX 1.5B with CoreML semantic encoder
-- `vibevoice-1.5b-coreml`: VibeVoice MLX 1.5B with semantic encoder disabled
+- `vibevoice-1.5b-coreml`: VibeVoice MLX 1.5B with default MLX semantic encoder
 - `vibevoice-7b+coreml`: VibeVoice MLX 7B with CoreML semantic encoder (default)
-- `vibevoice-7b-coreml`: VibeVoice MLX 7B with semantic encoder disabled
+- `vibevoice-7b-coreml`: VibeVoice MLX 7B with default MLX semantic encoder
 
 Open the browser at [http://localhost:8000/docs](http://localhost:8000/docs).
 
 ```bash
+cp .env.example .env
 source .venv/bin/activate
 uv sync
-uv run tts --host 0.0.0.0 --port 8000 --reload
+tts --host 0.0.0.0 --port 8000 --reload
 ```
 
 Chatterbox entrypoint:
@@ -42,11 +43,11 @@ Chatterbox entrypoint:
 Other mlx-audio backends:
 
 ```bash
-uv run tts --backend omnivoice --host 0.0.0.0 --port 8002 --reload
-uv run tts --backend kugelaudio --host 0.0.0.0 --port 8003 --reload
-uv run tts --backend higgs --host 0.0.0.0 --port 8004 --reload
-uv run tts --backend moss --host 0.0.0.0 --port 8005 --reload
-uv run tts --backend vibevoice-7b+coreml --host 0.0.0.0 --port 8006 --reload
+tts --backend omnivoice --host 0.0.0.0 --port 8002 --reload
+tts --backend kugelaudio --host 0.0.0.0 --port 8003 --reload
+tts --backend higgs --host 0.0.0.0 --port 8004 --reload
+tts --backend moss --host 0.0.0.0 --port 8005 --reload
+tts --backend vibevoice-7b+coreml --host 0.0.0.0 --port 8006 --reload
 ```
 
 CLI options:
@@ -122,8 +123,67 @@ The VibeVoice-MLX adapter uses CLI invocation under the hood and supports:
 
 - `gafiatulin/vibevoice-1.5b-mlx`
 - `gafiatulin/vibevoice-7b-mlx`
-- `--coreml-semantic` (or semantic disabled mode)
+- `--coreml-semantic` (non-CoreML variants use default MLX semantic feedback)
 - multi-speaker routing via `Speaker N:` transcript lines + `ref_audio`/`speaker_names`
+
+Default adapter tuning for noise diagnostics and quality:
+
+- `use_stage_directions` defaults to `false`
+- `diffusion_steps` defaults to `20`
+- `cfg_scale` defaults to `1.3`
+- `seed` defaults to `42`
+- `solver` defaults to `dpm`
+- `quantize_diffusion` defaults to `false`
+- `--silence-detection` and `--trim-trailing-silence` are enabled by default
+
+### VibeVoice Diagnostic Matrix Script
+
+Use the dedicated script to generate comparable multi-speaker and single-speaker
+diagnostic files across seeds, CFG values, diffusion steps, and quantization.
+
+```bash
+uv run python scripts/diagnose_vibevoice_noise.py
+```
+
+Common variants:
+
+```bash
+# Only non-CoreML backend (default MLX semantic encoder)
+uv run python scripts/diagnose_vibevoice_noise.py --backends vibevoice-7b-coreml
+
+# Skip per-voice isolation tests
+uv run python scripts/diagnose_vibevoice_noise.py --skip-single-speaker
+```
+
+Outputs are written to:
+
+- `audio_tests/diagnostics/vibevoice/<backend>/*.mp3`
+- `audio_tests/diagnostics/vibevoice/<backend>/single_speaker/*.mp3`
+- `audio_tests/diagnostics/vibevoice/manifest.json`
+
+### Voice Reference Preprocessing
+
+The VibeVoice upstream loader does not perform loudness normalization or denoising,
+so reference cleanup strongly affects cloning quality.
+
+Use the preprocessing helper (ffmpeg required):
+
+```bash
+# Process every voices/*.wav into voices/clean/*-clean.wav
+uv run python scripts/preprocess_voice_refs.py --all
+
+# Process one file
+uv run python scripts/preprocess_voice_refs.py --input voices/new_voice.wav
+
+# Overwrite source files (careful)
+uv run python scripts/preprocess_voice_refs.py --all --in-place
+```
+
+Default ffmpeg filter chain:
+
+```text
+highpass=f=70,lowpass=f=11000,adeclick,loudnorm=I=-20:TP=-2:LRA=7
+```
 
 Chatterbox runs in an isolated environment because its dependency graph differs from the mlx-audio stack:
 
@@ -198,14 +258,15 @@ curl -X POST http://127.0.0.1:8000/v1/omnivoice/speech \
 ```
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/kugelaudio/speech \
+curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Hallo, dit is een KugelAudio sample.",
     "voice_reference_path": "warm",
     "language": "nl",
     "output_filename": "kugelaudio_sample.mp3"
-  }'
+  }' \
+  --output kugelaudio_sample.mp3
 ```
 
 ```bash
@@ -217,7 +278,8 @@ curl -X POST http://127.0.0.1:8000/v1/higgs/speech \
     "ref_text": "This is the reference transcript.",
     "language": "en",
     "output_filename": "higgs_sample.mp3"
-  }'
+  }' \
+  --output higgs_sample.mp3
 ```
 
 ```bash
@@ -348,7 +410,7 @@ brew install rubberband
 - Linux and Windows are not supported by this repository as-is.
 - Python `>=3.14` is supported.
 - The project is being refactored toward a generic MLX TTS API with multiple backend adapters.
-- The current shared seam is `api_shared.py`; backend-specific synthesis lives in `server_voxtral.py`, `server_chatterbox.py`, `server_omnivoice.py`, `server_kugelaudio.py`, `server_higgs.py`, and `server_moss.py`.
+- The current shared seam is `src/api_shared.py`; backend-specific synthesis lives in `src/server_voxtral.py`, `src/server_chatterbox.py`, `src/server_omnivoice.py`, `src/server_kugelaudio.py`, `src/server_higgs.py`, and `src/server_moss.py`.
 - Audio export uses `soundfile` directly (no `pydub`).
 - If MP3 encoding is not available in the local `libsndfile` build, the API falls back to WAV output.
 - Speed adjustment uses `pyrubberband` (Rubber Band Library) for pitch-preserving time-stretch.

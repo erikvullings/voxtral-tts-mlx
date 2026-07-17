@@ -29,6 +29,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
+package-dir = {"" = "src"}
 py-modules = [
     "main",
     "api_shared",
@@ -41,10 +42,12 @@ py-modules = [
     "server_kugelaudio",
     "server_higgs",
     "server_moss",
-    "server_vibevoice",
     "server_vibevoice_mlx_base",
     "server_vibevoice_15b_coreml",
     "server_vibevoice_15b_no_coreml",
     "server_vibevoice_7b_coreml",
     "server_vibevoice_7b_no_coreml",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
