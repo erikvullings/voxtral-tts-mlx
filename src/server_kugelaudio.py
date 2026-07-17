@@ -462,6 +462,7 @@ app = create_app(
     engine=kugelaudio_engine,
     voice_response_model=dict[str, list[str]],
     route_prefix="kugelaudio",
+    backend_name="kugelaudio",
     openai_request_model=KugelAudioOpenAISpeechRequest,
     extended_request_model=KugelAudioSpeechRequest,
     backend_capabilities={
