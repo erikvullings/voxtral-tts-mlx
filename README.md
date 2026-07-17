@@ -107,6 +107,46 @@ Unified request-normalizer pipeline:
 - Higgs, MOSS, and VibeVoice now pass request text through one shared normalizer utility (`request_normalizer.py`).
 - This keeps base text cleanup, token-prefix composition, stage-direction injection, and optional pause token formatting consistent across those backends.
 
+### MLX Backend Utilities
+
+Generic utility functions in `src/mlx_utils.py` support all MLX-based backends:
+
+#### Warmup Function
+`warmup_mlx_model(model, generate_fn, **generate_kwargs)`
+
+Runs a minimal generation to trigger Metal shader compilation on Apple Silicon.
+Without warmup, the first real synthesis call incurs extra latency and noise during compilation.
+
+Example:
+
+```python
+from mlx_utils import warmup_mlx_model
+
+def warmup_kugelaud(m):
+    warmup_mlx_model(
+        m,
+        lambda **kw: (t for t in m.generate(**kw)),
+        text="Hi.",
+        voice="default",
+        max_tokens=10,
+    )
+```
+
+#### Logit Penalty Function
+`apply_logit_penalty(model, token_id, penalty_strength=5.0)`
+
+Penalizes a specific token ID during generation to prevent early stopping or over-production.
+Commonly used to prevent speech cutoff at sentence ends.
+
+Example (KugelAudio prevents `speech_end_id=151653` cutoff):
+
+```python
+from mlx_utils import apply_logit_penalty
+
+# After loading model
+model = apply_logit_penalty(model, token_id=151653, penalty_strength=5.0)
+```
+
 VibeVoice-MLX setup:
 
 ```bash
