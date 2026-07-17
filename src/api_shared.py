@@ -365,18 +365,11 @@ def _build_capabilities_payload(
     capabilities["backend"] = backend_name
     capabilities["routes"] = {
         "openaiSpeech": "/v1/audio/speech",
-        "genericVoices": "/v1/voices",
-        "genericSpeech": "/v1/speech",
-        "genericTranscriptPost": "/v1/transcript",
-        "genericTranscriptGet": "/v1/transcript/{lesson_id}",
-        "backendVoices": f"/v1/{route_prefix}/voices",
-        "backendSpeech": f"/v1/{route_prefix}/speech",
-        "backendTranscriptPost": f"/v1/{route_prefix}/transcript",
-        "backendTranscriptGet": f"/v1/{route_prefix}/transcript/{{lesson_id}}",
-        "capabilities": [
-            "/v1/capabilities",
-            f"/v1/{route_prefix}/capabilities",
-        ],
+        "voices": "/v1/voices",
+        "speech": "/v1/speech",
+        "transcriptPost": "/v1/transcript",
+        "transcriptGet": "/v1/transcript/{lesson_id}",
+        "capabilities": "/v1/capabilities",
     }
     return capabilities
 
@@ -612,23 +605,8 @@ def create_app(
     def get_aligner() -> FasterWhisperAligner:
         return aligner
 
-    @app.get(f"{route_root}/voices", response_model=voice_response_model)
-    async def list_voices(engine=Depends(get_engine)):
-        return engine.list_voices()
-
     @app.get("/v1/capabilities")
-    async def get_capabilities_root(engine=Depends(get_engine)):
-        return _build_capabilities_payload(
-            route_prefix=route_prefix,
-            backend_name=backend_name,
-            engine=engine,
-            supports_ssml_emphasis=supports_ssml_emphasis,
-            supports_ssml_breaks=supports_ssml_breaks,
-            backend_capabilities=backend_capabilities,
-        )
-
-    @app.get(f"{route_root}/capabilities")
-    async def get_capabilities_scoped(engine=Depends(get_engine)):
+    async def get_capabilities(engine=Depends(get_engine)):
         return _build_capabilities_payload(
             route_prefix=route_prefix,
             backend_name=backend_name,
@@ -674,109 +652,13 @@ def create_app(
             actual_output_path, media_type=media_type, filename=response_name
         )
 
-    @app.post(f"{route_root}/speech")
-    async def voxtral_dedicated_speech(
-        request: extended_request_model, engine=Depends(get_engine)
-    ):
-        output_path = f"generated_lessons/{request.output_filename}"
-        os.makedirs("generated_lessons", exist_ok=True)
-
-        prepared_text = _preprocess_tts_text(
-            request.text,
-            supports_ssml_emphasis=supports_ssml_emphasis,
-            supports_ssml_breaks=supports_ssml_breaks,
-        )
-
-        try:
-            actual_output_path = engine.synthesize(
-                text=prepared_text,
-                voice_path=request.voice_reference_path,
-                output_path=output_path,
-                **_request_kwargs(
-                    request,
-                    excluded={"text", "voice_reference_path", "output_filename"},
-                ),
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-        response_name = os.path.basename(actual_output_path)
-        media_type = "audio/mpeg" if response_name.endswith(".mp3") else "audio/wav"
-        return FileResponse(
-            actual_output_path, media_type=media_type, filename=response_name
-        )
-
-    @app.post(f"{route_root}/transcript", response_model=VoxtralTranscriptResponse)
-    async def voxtral_generate_transcript(
-        request: VoxtralTranscriptRequest,
-        transcript_aligner=Depends(get_aligner),
-    ):
-        derived_lesson_id = (
-            request.lesson_id or os.path.splitext(os.path.basename(request.audio_path))[0]
-        )
-
-        if not os.path.exists(request.audio_path):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Audio file not found: {request.audio_path}",
-            )
-
-        try:
-            transcript = transcript_aligner.align(
-                request.audio_path,
-                lesson_id=derived_lesson_id,
-                source_text=request.text,
-                language=request.language,
-                model_size=request.alignment_model_size,
-                beam_size=request.beam_size,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
-        if request.transcript_filename:
-            os.makedirs("generated_lessons", exist_ok=True)
-            transcript_path = os.path.join("generated_lessons", request.transcript_filename)
-            if not transcript_path.endswith(".json"):
-                transcript_path += ".json"
-        else:
-            os.makedirs("generated_lessons", exist_ok=True)
-            transcript_path = os.path.join("generated_lessons", f"{derived_lesson_id}.json")
-
-        with open(transcript_path, "w", encoding="utf-8") as fp:
-            import json
-
-            json.dump(transcript, fp, ensure_ascii=False, indent=2)
-
-        return {
-            "lesson_id": transcript["lesson_id"],
-            "audio_path": request.audio_path,
-            "transcript_path": transcript_path,
-            "sentences": transcript["sentences"],
-        }
-
-    @app.get(f"{route_root}/transcript/{{lesson_id}}", response_model=TranscriptDocument)
-    async def voxtral_get_transcript(lesson_id: str):
-        transcripts_dir = "generated_lessons"
-        transcript_path = _find_transcript_by_lesson_id(lesson_id, transcripts_dir)
-
-        try:
-            import json
-
-            with open(transcript_path, "r", encoding="utf-8") as fp:
-                data = json.load(fp)
-                return TranscriptDocument.model_validate(data)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to load transcript: {e}")
-
-    # ── Generic routes (no backend prefix) ────────────────────────────────────
+    # ── Generic routes ──────────────────────────────────────────────────────────
     @app.get("/v1/voices", response_model=voice_response_model)
-    async def generic_list_voices(engine=Depends(get_engine)):
+    async def list_voices(engine=Depends(get_engine)):
         return engine.list_voices()
 
     @app.post("/v1/speech")
-    async def generic_dedicated_speech(
+    async def speech_synthesis(
         request: extended_request_model, engine=Depends(get_engine)
     ):
         output_path = f"generated_lessons/{request.output_filename}"
@@ -810,7 +692,7 @@ def create_app(
         )
 
     @app.post("/v1/transcript", response_model=VoxtralTranscriptResponse)
-    async def generic_generate_transcript(
+    async def generate_transcript(
         request: VoxtralTranscriptRequest,
         transcript_aligner=Depends(get_aligner),
     ):
@@ -858,7 +740,7 @@ def create_app(
         }
 
     @app.get("/v1/transcript/{lesson_id}", response_model=TranscriptDocument)
-    async def generic_get_transcript(lesson_id: str):
+    async def get_transcript(lesson_id: str):
         transcripts_dir = "generated_lessons"
         transcript_path = _find_transcript_by_lesson_id(lesson_id, transcripts_dir)
 
