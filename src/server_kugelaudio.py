@@ -158,6 +158,33 @@ def _build_voice_inputs_embeds(model: Any, text: str, acoustic_mean: mx.array) -
     return inputs_embeds
 
 
+def _apply_speech_end_penalty(model: Any) -> Any:
+    """Patch the model to penalize speech_end_id logit during generation.
+
+    This prevents the model from prematurely stopping speech generation,
+    which was causing cutoffs at the end of sentences. The penalty is applied
+    to the speech_end_id logit to encourage longer, more complete generation.
+
+    Mirrors the fix from upstream KugelAudio reference implementation.
+    """
+    _SPEECH_END_ID = 151653
+    _PENALTY_STRENGTH = 5.0
+
+    original_get_lm_logits = model.get_lm_logits
+
+    def patched_get_lm_logits(hidden_states: mx.array) -> mx.array:
+        logits = original_get_lm_logits(hidden_states)
+        # Apply penalty to speech_end_id to discourage premature stopping
+        # logits shape: (batch_size, seq_len, vocab_size)
+        # We want to penalize all positions' speech_end_id predictions
+        if logits.ndim >= 1 and logits.shape[-1] > _SPEECH_END_ID:
+            logits[..., _SPEECH_END_ID] -= _PENALTY_STRENGTH
+        return logits
+
+    model.get_lm_logits = patched_get_lm_logits
+    return model
+
+
 class KugelAudioOpenAISpeechRequest(OpenAISpeechRequest):
     model: str = "kugelaudio/kugelaudio-0-open"
     voice: str = "default"
@@ -299,6 +326,8 @@ class RealKugelAudioEngine:
 
                 self._model = cast(_KugelAudioModel, load(self.MODEL_ID))
                 print("✅ KugelAudio model loaded.")
+                # Apply speech_end_id penalty to prevent premature generation cutoff
+                self._model = _apply_speech_end_penalty(self._model)
                 self._warmup_model(self._model)
 
             model = self._model
