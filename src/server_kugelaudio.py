@@ -8,11 +8,13 @@ from typing import Any, Iterable, Optional, Protocol, cast
 import mlx.core as mx
 
 from api_shared import OpenAISpeechRequest, VoxtralExtendedRequest, create_app
+from mlx_utils import apply_logit_penalty, warmup_mlx_model
 from server_mlx_audio import collect_generation_audio, write_audio_output
 
 # Special token IDs (same as the upstream kugelaudio-open processor)
 _SPEECH_START_ID = 151652
 _SPEECH_DIFFUSION_ID = 151654
+_SPEECH_END_ID = 151653
 
 
 class _KugelAudioModel(Protocol):
@@ -158,32 +160,6 @@ def _build_voice_inputs_embeds(model: Any, text: str, acoustic_mean: mx.array) -
     return inputs_embeds
 
 
-def _apply_speech_end_penalty(model: Any) -> Any:
-    """Patch the model to penalize speech_end_id logit during generation.
-
-    This prevents the model from prematurely stopping speech generation,
-    which was causing cutoffs at the end of sentences. The penalty is applied
-    to the speech_end_id logit to encourage longer, more complete generation.
-
-    Mirrors the fix from upstream KugelAudio reference implementation.
-    """
-    _SPEECH_END_ID = 151653
-    _PENALTY_STRENGTH = 5.0
-
-    original_get_lm_logits = model.get_lm_logits
-
-    def patched_get_lm_logits(hidden_states: mx.array) -> mx.array:
-        logits = original_get_lm_logits(hidden_states)
-        # Apply penalty to speech_end_id to discourage premature stopping
-        # logits shape: (batch_size, seq_len, vocab_size)
-        # We want to penalize all positions' speech_end_id predictions
-        if logits.ndim >= 1 and logits.shape[-1] > _SPEECH_END_ID:
-            logits[..., _SPEECH_END_ID] -= _PENALTY_STRENGTH
-        return logits
-
-    model.get_lm_logits = patched_get_lm_logits
-    return model
-
 
 class KugelAudioOpenAISpeechRequest(OpenAISpeechRequest):
     model: str = "kugelaudio/kugelaudio-0-open"
@@ -289,34 +265,17 @@ class RealKugelAudioEngine:
 
     @staticmethod
     def _warmup_model(model: _KugelAudioModel) -> None:
-        """Run a minimal generation to trigger MLX Metal shader compilation.
-
-        On Apple Silicon, MLX uses lazy evaluation — computation graphs are
-        compiled the first time they are executed. Without a warmup the very
-        first real synthesis call incurs extra latency and can produce a burst
-        of noise while Metal shaders compile. Running a dummy generation here
-        forces all paths (LM forward, diffusion head, acoustic decoder) to
-        compile once at startup.
-        """
-        print("🔥 Warming up KugelAudio MLX model...")
-        try:
-            for _ in model.generate(
+        """Run a minimal generation to trigger MLX Metal shader compilation."""
+        def generate_warmup():
+            return model.generate(
                 text="Hi.",
                 voice="default",
                 cfg_scale=3.0,
                 max_tokens=10,
                 verbose=False,
-            ):
-                pass
-            try:
-                import mlx.core as mx
+            )
 
-                mx.clear_cache()
-            except Exception:  # pylint: disable=broad-except
-                pass
-            print("✅ KugelAudio warmup complete.")
-        except Exception as exc:  # pylint: disable=broad-except
-            print(f"⚠️  KugelAudio warmup failed (non-fatal): {exc}")
+        warmup_mlx_model(model, generate_warmup)
 
     def _load_model(self) -> _KugelAudioModel:
         with self._lock:
@@ -327,7 +286,7 @@ class RealKugelAudioEngine:
                 self._model = cast(_KugelAudioModel, load(self.MODEL_ID))
                 print("✅ KugelAudio model loaded.")
                 # Apply speech_end_id penalty to prevent premature generation cutoff
-                self._model = _apply_speech_end_penalty(self._model)
+                self._model = apply_logit_penalty(self._model, _SPEECH_END_ID, penalty_strength=5.0)
                 self._warmup_model(self._model)
 
             model = self._model
