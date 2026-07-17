@@ -4,6 +4,7 @@ import threading
 from typing import Any, Optional, Protocol, cast
 
 from api_shared import OpenAISpeechRequest, VoxtralExtendedRequest, create_app
+from mlx_utils import warmup_mlx_model
 from server_mlx_audio import (
     collect_generation_audio,
     resolve_reference_audio_path,
@@ -71,6 +72,18 @@ class RealOmniVoiceEngine:
         self._model: Optional[_OmniVoiceModel] = None
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _warmup_model(model: _OmniVoiceModel) -> None:
+        """Run a minimal generation to trigger MLX Metal shader compilation."""
+        def generate_warmup():
+            return model.generate(
+                text="Hi.",
+                language="en",
+                num_steps=5,
+            )
+
+        warmup_mlx_model(model, generate_warmup)
+
     def _load_model(self) -> _OmniVoiceModel:
         with self._lock:
             if self._model is None:
@@ -79,6 +92,7 @@ class RealOmniVoiceEngine:
 
                 self._model = cast(_OmniVoiceModel, load(self.MODEL_ID))
                 print("✅ OmniVoice model loaded.")
+                self._warmup_model(self._model)
 
             model = self._model
             if model is None:

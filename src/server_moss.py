@@ -4,6 +4,7 @@ import threading
 from typing import Any, Optional, Protocol, cast
 
 from api_shared import OpenAISpeechRequest, VoxtralExtendedRequest, create_app
+from mlx_utils import warmup_mlx_model
 from request_normalizer import build_stage_directions, normalize_request_text
 from server_mlx_audio import (
     collect_generation_audio,
@@ -89,6 +90,18 @@ class RealMossTTSEngine:
         self._model: Optional[_MossTTSModel] = None
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _warmup_model(model: _MossTTSModel) -> None:
+        """Run a minimal generation to trigger MLX Metal shader compilation."""
+        def generate_warmup():
+            return model.generate(
+                text="Hi.",
+                language="en",
+                max_tokens=10,
+            )
+
+        warmup_mlx_model(model, generate_warmup)
+
     def _load_model(self) -> _MossTTSModel:
         with self._lock:
             if self._model is None:
@@ -97,7 +110,7 @@ class RealMossTTSEngine:
 
                 self._model = cast(_MossTTSModel, load(self.MODEL_ID))
                 print("✅ MOSS-TTS model loaded.")
-
+                self._warmup_model(self._model)
             model = self._model
             if model is None:
                 raise RuntimeError("MOSS-TTS model failed to initialize")

@@ -6,6 +6,7 @@ from typing import Any, Optional, Protocol, cast
 from pydantic import BaseModel
 
 from api_shared import OpenAISpeechRequest, VoxtralExtendedRequest, create_app
+from mlx_utils import warmup_mlx_model
 from request_normalizer import build_higgs_tokens, build_stage_directions, normalize_request_text
 from server_mlx_audio import (
     collect_generation_audio,
@@ -100,6 +101,18 @@ class RealHiggsAudioEngine:
         self._model: Optional[_HiggsAudioModel] = None
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _warmup_model(model: _HiggsAudioModel) -> None:
+        """Run a minimal generation to trigger MLX Metal shader compilation."""
+        def generate_warmup():
+            return model.generate(
+                text="Hi.",
+                language="en",
+                max_new_tokens=10,
+            )
+
+        warmup_mlx_model(model, generate_warmup)
+
     def _load_model(self) -> _HiggsAudioModel:
         with self._lock:
             if self._model is None:
@@ -108,6 +121,7 @@ class RealHiggsAudioEngine:
 
                 self._model = cast(_HiggsAudioModel, load(self.MODEL_ID))
                 print("✅ Higgs Audio model loaded.")
+                self._warmup_model(self._model)
 
             model = self._model
             if model is None:
