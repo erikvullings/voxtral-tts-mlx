@@ -114,10 +114,12 @@ class VibeVoiceMlxEngine:
             if cleaned:
                 return cleaned
 
+        if voice_path and voice_path.strip():
+            # Single-speaker default when caller picks one explicit voice.
+            return [voice_path.strip()]
+
         # Default two-speaker map with explicit male/female preference.
         defaults = ["bart", "anouk"]
-        if voice_path and voice_path.strip():
-            defaults[1] = voice_path.strip()
 
         available = set(self._voice_stems())
         resolved: list[str] = []
@@ -276,6 +278,7 @@ class VibeVoiceMlxEngine:
         segments: Any,
         use_stage_directions: bool,
         language: Optional[str],
+        speaker_count: int,
     ) -> str:
         if isinstance(segments, list) and segments:
             parsed: list[VibeVoiceSegment] = []
@@ -321,7 +324,14 @@ class VibeVoiceMlxEngine:
                 return "Speaker 1:"
             return f"Speaker {idx}:"
 
+        has_speaker_labels = bool(re.search(r"(?im)^\s*speaker\s*\d+\s*:", base))
         base = re.sub(r"(?im)^\s*speaker\s*(\d+)\s*:", _normalize_speaker_label, base)
+        if speaker_count <= 1 and not has_speaker_labels:
+            lines = [ln.strip() for ln in base.splitlines() if ln.strip()]
+            if lines:
+                base = "\n".join(f"Speaker 1: {ln}" for ln in lines)
+            else:
+                base = f"Speaker 1: {base}"
 
         mapped = self.EMOTION_MAP.get((emotion or "").strip().lower(), "normal")
         if use_stage_directions and mapped:
@@ -366,6 +376,7 @@ class VibeVoiceMlxEngine:
             segments=kwargs.get("segments"),
             use_stage_directions=bool(kwargs.get("use_stage_directions", False)),
             language=kwargs.get("language"),
+            speaker_count=len(speaker_names),
         )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -470,6 +481,21 @@ def create_vibevoice_mlx_app(variant: VibeVoiceVariant):
                 "routingFormat": "Speaker N: ...",
                 "speakerIndexing": "1-based in prompts",
                 "notes": "Preferred flow matches upstream CLI: text transcript with Speaker 1/Speaker 2 labels plus ref_audio list.",
+                "singleSpeakerDefaults": {
+                    "whenVoiceProvidedWithoutSpeakerNames": "use-single-speaker",
+                    "autoLabelWhenMissing": "Speaker 1",
+                },
+            },
+            "voiceReferenceResolution": {
+                "voiceField": "voice",
+                "speakerNamesField": "speaker_names",
+                "refAudioField": "ref_audio",
+                "resolutionOrder": [
+                    "explicit ref_audio",
+                    "speaker_names -> voices/<name>.wav",
+                    "voice -> single speaker and voices/<voice>.wav",
+                    "default pair bart/anouk",
+                ],
             },
             "generationBudgeting": {
                 "maxSpeechTokens": {

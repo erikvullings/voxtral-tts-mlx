@@ -6,6 +6,7 @@ import threading
 from typing import Any, Iterable, Optional, Protocol, cast
 
 import mlx.core as mx
+import numpy as np
 
 from api_shared import OpenAISpeechRequest, VoxtralExtendedRequest, create_app
 from mlx_utils import apply_logit_penalty, warmup_mlx_model
@@ -283,16 +284,32 @@ class RealKugelAudioEngine:
                 print(f"📦 Loading KugelAudio MLX model ({self.MODEL_ID})...")
                 from mlx_audio.tts.utils import load
 
-                self._model = cast(_KugelAudioModel, load(self.MODEL_ID))
+                loaded_model = cast(_KugelAudioModel, load(self.MODEL_ID))
                 print("✅ KugelAudio model loaded.")
                 # Apply speech_end_id penalty to prevent premature generation cutoff
-                self._model = apply_logit_penalty(self._model, _SPEECH_END_ID, penalty_strength=5.0)
-                self._warmup_model(self._model)
+                loaded_model = apply_logit_penalty(loaded_model, _SPEECH_END_ID, penalty_strength=5.0)
+                self._warmup_model(loaded_model)
+                self._model = loaded_model
 
             model = self._model
             if model is None:
                 raise RuntimeError("KugelAudio model failed to initialize")
             return model
+
+    @staticmethod
+    def _apply_speed(audio: np.ndarray, sample_rate: int, speed: float) -> np.ndarray:
+        """Pitch-preserving time-stretch via Rubber Band Library (pyrubberband)."""
+        speed = max(0.25, min(4.0, speed))
+        if abs(speed - 1.0) < 0.001 or audio.size == 0:
+            return audio
+
+        import pyrubberband
+
+        # Prepend silence so the stretcher stabilizes before first speech frames.
+        pad = int(0.1 * sample_rate)
+        padded = np.concatenate([np.zeros(pad, dtype=audio.dtype), audio])
+        stretched = pyrubberband.time_stretch(padded, sample_rate, speed).astype(audio.dtype)
+        return stretched[round(pad / speed) :]
 
     @staticmethod
     def _resolve_pt_file(name: str) -> Optional[str]:
@@ -335,6 +352,103 @@ class RealKugelAudioEngine:
             "wavFiles": wav_voices,
         }
 
+    @staticmethod
+    def _split_text_chunks(text: str, max_chars: int = 240) -> list[tuple[str, bool]]:
+        normalized = re.sub(r"\s+", " ", text).strip()
+        if not normalized:
+            return []
+
+        sentences = [
+            chunk.strip()
+            for chunk in re.split(r"(?<=[.!?])\s+", normalized)
+            if chunk.strip()
+        ]
+        if not sentences:
+            sentences = [normalized]
+
+        def split_long_piece(piece: str) -> list[tuple[str, bool]]:
+            if len(piece) <= max_chars:
+                return [(piece, True)]
+
+            # First fallback: split by clause punctuation to keep phrasing natural.
+            clause_parts = [
+                seg.strip()
+                for seg in re.split(r"(?<=[,;:])\s+", piece)
+                if seg.strip()
+            ]
+            if len(clause_parts) <= 1:
+                clause_parts = [piece]
+
+            out: list[str] = []
+            for clause in clause_parts:
+                if len(clause) <= max_chars:
+                    out.append(clause)
+                    continue
+
+                # Final fallback: split on whitespace only (never inside a word).
+                words = clause.split()
+                if not words:
+                    continue
+                current = words[0]
+                for word in words[1:]:
+                    candidate = f"{current} {word}"
+                    if len(candidate) <= max_chars:
+                        current = candidate
+                    else:
+                        out.append(current)
+                        current = word
+                out.append(current)
+
+            if not out:
+                return []
+            chunks_with_flags: list[tuple[str, bool]] = []
+            for idx, chunk in enumerate(out):
+                chunks_with_flags.append((chunk, idx == len(out) - 1))
+            return chunks_with_flags
+
+        sentence_units: list[tuple[str, bool]] = []
+        for sentence in sentences:
+            sentence_units.extend(split_long_piece(sentence))
+
+        # Keep sentence boundaries explicit; do not merge neighboring sentences.
+        return sentence_units
+
+    def _synthesize_chunk(
+        self,
+        model: _KugelAudioModel,
+        *,
+        text: str,
+        call_kwargs: dict[str, Any],
+        pt_file: str | None,
+        seed: int,
+    ) -> tuple[np.ndarray, int]:
+        chunk_kwargs = dict(call_kwargs)
+        chunk_kwargs["text"] = text
+        chunk_kwargs["max_new_tokens"] = self._auto_max_new_tokens(
+            text,
+            call_kwargs.get("max_new_tokens"),
+        )
+
+        if pt_file is not None:
+            acoustic_mean = _load_voice_pt(pt_file)
+            voice_inputs_embeds = _build_voice_inputs_embeds(model, text, acoustic_mean)
+
+            original_lm = model.language_model  # type: ignore[attr-defined]
+            model.language_model = _FirstCallVoiceWrapper(original_lm, voice_inputs_embeds)  # type: ignore[attr-defined]
+            try:
+                results = self._generate_with_fallback(model, chunk_kwargs)
+                return collect_generation_audio(
+                    results, default_sample_rate=getattr(model, "sample_rate", 24000)
+                )
+            finally:
+                model.language_model = original_lm  # type: ignore[attr-defined]
+
+        mx.random.seed(seed)
+        results = self._generate_with_fallback(model, chunk_kwargs)
+        return collect_generation_audio(
+            results, default_sample_rate=getattr(model, "sample_rate", 24000)
+        )
+
     def synthesize(
         self,
         text: str,
@@ -373,44 +487,60 @@ class RealKugelAudioEngine:
         if not normalized_text:
             raise ValueError("Text input cannot be empty")
 
-        max_new_tokens = self._auto_max_new_tokens(text, kwargs.get("max_new_tokens"))
-
         call_kwargs: dict[str, Any] = {
             "text": normalized_text,
             "voice": voice,
             "language": language,
             "cfg_scale": float(kwargs.get("cfg_scale", 3.0)),
-            "max_new_tokens": max_new_tokens,
+            "max_new_tokens": kwargs.get("max_new_tokens"),
             "do_sample": bool(kwargs.get("do_sample", False)),
             "temperature": float(kwargs.get("temperature", 1.0)),
         }
 
-        if pt_file is not None:
-            # ── Full voice conditioning via pre-encoded acoustic_mean ──────
-            # Load the .pt file and inject the voice embeddings into the LM's
-            # initial forward pass, mirroring the upstream PyTorch processor.
-            acoustic_mean = _load_voice_pt(pt_file)
-            voice_inputs_embeds = _build_voice_inputs_embeds(model, normalized_text, acoustic_mean)
+        chunk_chars = int(os.getenv("KUGELAUDIO_MAX_CHARS_PER_CHUNK", "240"))
+        chunk_chars = max(80, min(600, chunk_chars))
+        text_chunks = self._split_text_chunks(normalized_text, max_chars=chunk_chars)
+        if not text_chunks:
+            raise ValueError("Text input cannot be empty")
 
-            original_lm = model.language_model  # type: ignore[attr-defined]
-            model.language_model = _FirstCallVoiceWrapper(original_lm, voice_inputs_embeds)  # type: ignore[attr-defined]
-            try:
-                results = self._generate_with_fallback(model, call_kwargs)
-                audio, sample_rate = collect_generation_audio(
-                    results, default_sample_rate=getattr(model, "sample_rate", 24000)
-                )
-            finally:
-                model.language_model = original_lm  # type: ignore[attr-defined]
-        else:
-            # ── Fallback: no .pt file — use a fixed seed per voice name ────
-            # This makes output consistent per preset name even though the MLX
-            # model ignores the voice parameter.  The preset .pt files are not
-            # published by KugelAudio; create them with encode_voice_kugelaudio.py.
-            mx.random.seed(self._FALLBACK_SEEDS.get(voice, 42))
-            results = self._generate_with_fallback(model, call_kwargs)
-            audio, sample_rate = collect_generation_audio(
-                results, default_sample_rate=getattr(model, "sample_rate", 24000)
+        # Use explicit per-boundary pauses for consistent pacing.
+        stitch_gap_ms = int(os.getenv("KUGELAUDIO_STITCH_GAP_MS", "40"))
+        stitch_gap_ms = max(0, min(500, stitch_gap_ms))
+        sentence_gap_ms = int(os.getenv("KUGELAUDIO_SENTENCE_GAP_MS", "160"))
+        sentence_gap_ms = max(0, min(1000, sentence_gap_ms))
+
+        fallback_seed = self._FALLBACK_SEEDS.get(voice, 42)
+        sample_rate = int(getattr(model, "sample_rate", 24000))
+        stitched: list[np.ndarray] = []
+        for idx, (chunk, ends_sentence) in enumerate(text_chunks):
+            chunk_audio, chunk_sample_rate = self._synthesize_chunk(
+                model,
+                text=chunk,
+                call_kwargs=call_kwargs,
+                pt_file=pt_file,
+                seed=fallback_seed + idx,
             )
+            if idx > 0 and stitch_gap_ms > 0:
+                stitched.append(
+                    np.zeros(
+                        int(chunk_sample_rate * stitch_gap_ms / 1000.0),
+                        dtype=np.float32,
+                    )
+                )
+            stitched.append(chunk_audio)
+            if ends_sentence and sentence_gap_ms > 0:
+                stitched.append(
+                    np.zeros(
+                        int(chunk_sample_rate * sentence_gap_ms / 1000.0),
+                        dtype=np.float32,
+                    )
+                )
+            sample_rate = chunk_sample_rate
+
+        audio = np.concatenate(stitched) if stitched else np.zeros(0, dtype=np.float32)
+
+        speed = float(kwargs.get("speed", 1.0))
+        audio = self._apply_speed(audio, sample_rate, speed)
 
         return write_audio_output(output_path, audio, sample_rate=sample_rate)
 
@@ -464,6 +594,26 @@ app = create_app(
                 "clampRange": [2048, 8192],
                 "overrideField": "max_new_tokens",
             }
+        },
+        "longTextStability": {
+            "chunking": {
+                "enabled": True,
+                "strategy": "sentence-first-then-clause-then-whitespace",
+                "maxCharsPerChunkEnv": "KUGELAUDIO_MAX_CHARS_PER_CHUNK",
+                "defaultMaxCharsPerChunk": 240,
+            },
+            "stitching": {
+                "intraChunkGapMsEnv": "KUGELAUDIO_STITCH_GAP_MS",
+                "defaultIntraChunkGapMs": 40,
+                "sentenceGapMsEnv": "KUGELAUDIO_SENTENCE_GAP_MS",
+                "defaultSentenceGapMs": 160,
+            },
+        },
+        "timeScaling": {
+            "supported": True,
+            "requestField": "speed",
+            "range": [0.25, 4.0],
+            "implementation": "pitch-preserving-rubberband",
         },
     },
 )
