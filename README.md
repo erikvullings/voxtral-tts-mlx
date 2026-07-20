@@ -80,7 +80,14 @@ scripts/install-mac.sh --backend voxtral --run --port 8001
 
 ## Backend Compatibility Notes
 
-All backends share the same OpenAI-compatible endpoint (`POST /v1/audio/speech`) and a backend-specific route set (`/v1/<backend>/speech`, `/v1/<backend>/transcript`, `/v1/<backend>/voices`).
+All backends share the same HTTP endpoints:
+
+- `POST /v1/audio/speech`
+- `GET /v1/voices`
+- `POST /v1/speech`
+- `POST /v1/transcript`
+- `GET /v1/transcript/{lesson_id}`
+- `GET /v1/capabilities`
 
 General behavior:
 
@@ -92,7 +99,6 @@ General behavior:
 Capability discovery endpoint:
 
 - `GET /v1/capabilities`
-- `GET /v1/<backend>/capabilities`
 
 The capabilities payload includes:
 
@@ -236,13 +242,7 @@ This starts:
 
 ## Additional MLX-Audio Backends
 
-All of these backends use the same shared HTTP layer in `api_shared.py`, but they expose their own route prefixes:
-
-- `omnivoice` exposes `/v1/omnivoice/voices`, `/v1/omnivoice/speech`, and `/v1/omnivoice/transcript`
-- `kugelaudio` exposes `/v1/kugelaudio/voices`, `/v1/kugelaudio/speech`, and `/v1/kugelaudio/transcript`
-- `higgs` exposes `/v1/higgs/voices`, `/v1/higgs/speech`, and `/v1/higgs/transcript`
-- `moss` exposes `/v1/moss/voices`, `/v1/moss/speech`, and `/v1/moss/transcript`
-- `vibevoice` exposes `/v1/vibevoice/voices`, `/v1/vibevoice/speech`, and `/v1/vibevoice/transcript`
+All backends use the same shared HTTP layer in `api_shared.py`. The running server backend determines what `GET /v1/voices`, `POST /v1/speech`, and `POST /v1/audio/speech` return.
 
 Voice support:
 
@@ -283,7 +283,7 @@ This means Dutch is not globally assumed by the API. Set `language` explicitly w
 Quick examples:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/omnivoice/speech \
+curl -X POST http://127.0.0.1:8000/v1/speech \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Hallo, dit is een OmniVoice sample.",
@@ -296,7 +296,7 @@ curl -X POST http://127.0.0.1:8000/v1/omnivoice/speech \
 
 ```bash
 # With preset voice
-curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
+curl -X POST http://127.0.0.1:8003/v1/speech \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Hallo, dit is een KugelAudio sample.",
@@ -307,7 +307,7 @@ curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
   --output kugelaudio_sample.mp3
 
 # With custom voice (requires prior encoding)
-curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
+curl -X POST http://127.0.0.1:8003/v1/speech \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Welkom bij de Nederlandse les.",
@@ -319,7 +319,7 @@ curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
 ```
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/higgs/speech \
+curl -X POST http://127.0.0.1:8000/v1/speech \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Hello, this is a Higgs Audio sample.",
@@ -332,7 +332,7 @@ curl -X POST http://127.0.0.1:8000/v1/higgs/speech \
 ```
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/moss/speech \
+curl -X POST http://127.0.0.1:8000/v1/speech \
   -H "Content-Type: application/json" \
   -d '{
     "text": "MOSS-TTS supports cloning from a local reference clip.",
@@ -382,7 +382,7 @@ First run will auto-download the KugelAudio model (~17GB, cached in `~/.cache/hu
 Once encoded, reference the voice by name (the filename stem without `.pt`):
 
 ```bash
-curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
+curl -X POST http://127.0.0.1:8003/v1/speech \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Custom voice synthesis.",
@@ -398,7 +398,7 @@ curl -X POST http://127.0.0.1:8003/v1/kugelaudio/speech \
 Query the capabilities endpoint to list all available voices (presets + encoded):
 
 ```bash
-curl http://127.0.0.1:8003/v1/kugelaudio/capabilities | jq .voices
+curl http://127.0.0.1:8003/v1/capabilities | jq .voices
 ```
 
 ## Prosody / SSML Support Matrix

@@ -312,6 +312,27 @@ class RealKugelAudioEngine:
         return stretched[round(pad / speed) :]
 
     @staticmethod
+    def _trim_leading_silence(
+        audio: np.ndarray,
+        *,
+        sample_rate: int,
+        threshold: float = 0.01,
+        lead_in_ms: float = 10.0,
+    ) -> np.ndarray:
+        if audio.size == 0:
+            return audio
+
+        onset_indices = np.flatnonzero(np.abs(audio) > threshold)
+        if onset_indices.size == 0:
+            return audio
+
+        lead_in_samples = int(sample_rate * lead_in_ms / 1000.0)
+        trim_idx = max(0, int(onset_indices[0]) - lead_in_samples)
+        if trim_idx <= 0:
+            return audio
+        return audio[trim_idx:]
+
+    @staticmethod
     def _resolve_pt_file(name: str) -> Optional[str]:
         """Return path to a .pt voice file for *name*, or None if not found.
 
@@ -437,17 +458,25 @@ class RealKugelAudioEngine:
             model.language_model = _FirstCallVoiceWrapper(original_lm, voice_inputs_embeds)  # type: ignore[attr-defined]
             try:
                 results = self._generate_with_fallback(model, chunk_kwargs)
-                return collect_generation_audio(
+                audio, sample_rate = collect_generation_audio(
                     results, default_sample_rate=getattr(model, "sample_rate", 24000)
                 )
+                return self._trim_leading_silence(
+                    audio,
+                    sample_rate=sample_rate,
+                ), sample_rate
             finally:
                 model.language_model = original_lm  # type: ignore[attr-defined]
 
         mx.random.seed(seed)
         results = self._generate_with_fallback(model, chunk_kwargs)
-        return collect_generation_audio(
+        audio, sample_rate = collect_generation_audio(
             results, default_sample_rate=getattr(model, "sample_rate", 24000)
         )
+        return self._trim_leading_silence(
+            audio,
+            sample_rate=sample_rate,
+        ), sample_rate
 
     def synthesize(
         self,
@@ -507,7 +536,7 @@ class RealKugelAudioEngine:
         stitch_gap_ms = int(os.getenv("KUGELAUDIO_STITCH_GAP_MS", "40"))
         stitch_gap_ms = max(0, min(500, stitch_gap_ms))
         sentence_gap_ms = int(os.getenv("KUGELAUDIO_SENTENCE_GAP_MS", "160"))
-        sentence_gap_ms = max(0, min(1000, sentence_gap_ms))
+        sentence_gap_ms = max(0, min(5000, sentence_gap_ms))
 
         fallback_seed = self._FALLBACK_SEEDS.get(voice, 42)
         sample_rate = int(getattr(model, "sample_rate", 24000))
@@ -607,6 +636,7 @@ app = create_app(
                 "defaultIntraChunkGapMs": 40,
                 "sentenceGapMsEnv": "KUGELAUDIO_SENTENCE_GAP_MS",
                 "defaultSentenceGapMs": 160,
+                "maxSentenceGapMs": 5000,
             },
         },
         "timeScaling": {
