@@ -147,24 +147,22 @@ from mlx_utils import apply_logit_penalty
 model = apply_logit_penalty(model, token_id=151653, penalty_strength=5.0)
 ```
 
-VibeVoice-MLX setup:
+VibeVoice setup:
 
-```bash
-uv tool install --from git+https://github.com/gafiatulin/vibevoice-mlx vibevoice-mlx
-```
+The adapter uses the community VibeVoice inference pipeline, which preserves its
+reference-audio conditioning. Its default checkout is `/tmp/vibevoice` and its
+virtual environment is `/tmp/vibevoice/.venv`. Override these paths with
+`VIBEVOICE_COMMUNITY_ROOT` and `VIBEVOICE_COMMUNITY_PYTHON` when needed.
 
-No-install option:
+It supports `vibevoice/VibeVoice-1.5B` and `vibevoice/VibeVoice-7B`, with
+multi-speaker routing via `Speaker N:` transcript lines plus ordered
+`ref_audio`/`speaker_names` references. The legacy `+coreml` backend aliases
+remain available for compatibility but no longer enable CoreML.
 
-- You can vendor/copy the `vibevoice_mlx/` package into this repository root.
-- The adapter will automatically prefer `python -m vibevoice_mlx.e2e_pipeline` from local code.
-- It also supports using a local clone at `/tmp/vibevoice-mlx` via `uv run --directory`.
-
-The VibeVoice-MLX adapter uses CLI invocation under the hood and supports:
-
-- `gafiatulin/vibevoice-1.5b-mlx`
-- `gafiatulin/vibevoice-7b-mlx`
-- `--coreml-semantic` (non-CoreML variants use default MLX semantic feedback)
-- multi-speaker routing via `Speaker N:` transcript lines + `ref_audio`/`speaker_names`
+> **Language support:** Use VibeVoice for English and Chinese only. Dutch and
+> other languages are unsupported and can be unintelligible even with a
+> matching voice reference; the API `language` field does not condition the
+> community VibeVoice model.
 
 Default adapter tuning for noise diagnostics and quality:
 
@@ -172,7 +170,6 @@ Default adapter tuning for noise diagnostics and quality:
 - `diffusion_steps` defaults to `20`
 - `cfg_scale` defaults to `1.3`
 - `seed` defaults to `42`
-- `solver` defaults to `dpm`
 - `quantize_diffusion` defaults to `false`
 - `--silence-detection` and `--trim-trailing-silence` are enabled by default
 

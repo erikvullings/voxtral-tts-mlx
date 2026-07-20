@@ -252,6 +252,8 @@ def tokenize_text(
         speaker_tokens_list = []
         for line in lines:
             line = line.strip()
+            if not line:
+                continue
             def _decrement_speaker(m):
                 n = int(m.group(1))
                 return f"Speaker {max(0, n - 1)}"
@@ -274,6 +276,8 @@ def tokenize_text(
     speaker_tokens = []
     for line in lines:
         line = line.strip()
+        if not line:
+            continue
         # Single-segment models require "Speaker 0:" prefix
         if config.single_segment and not re.match(r"Speaker\s+\d+", line):
             line = f"Speaker 0: {line}"

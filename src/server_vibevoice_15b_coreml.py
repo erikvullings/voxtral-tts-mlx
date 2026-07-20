@@ -6,7 +6,7 @@ app = create_vibevoice_mlx_app(
     VibeVoiceVariant(
         backend_tag="vibevoice-1.5b+coreml",
         route_prefix="vibevoice-15b-coreml",
-        model_id="gafiatulin/vibevoice-1.5b-mlx",
+        model_id="vibevoice/VibeVoice-1.5B",
         coreml_semantic=True,
     )
 )

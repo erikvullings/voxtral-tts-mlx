@@ -26,12 +26,17 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_DIALOGUE = (
-    "Speaker 1: Welcome to our programme.\\n"
-    "Speaker 2: Thank you. It is good to be here.\\n"
-    "Speaker 1: Let us begin with the first subject."
+    "Speaker 1: Welkom bij onze uitzending. Vandaag bespreken we taal en technologie.\\n"
+    "Speaker 2: Dank je wel. Ik kijk ernaar uit om hierover te praten.\\n"
+    "Speaker 1: Laten we beginnen met de eerste vraag.\\n"
+    "Speaker 2: Een heldere uitspraak maakt luisteren prettig en natuurlijk."
 )
 
-DEFAULT_SINGLE_SPEAKER_TEXT = "Speaker 1: This is a clean voice-reference test."
+DEFAULT_SINGLE_SPEAKER_TEXT = (
+    "Speaker 1: Dit is een test met meerdere zinnen. "
+    "De stem moet in elke zin hetzelfde blijven. "
+    "We controleren ook tempo, klank en uitspraak."
+)
 
 
 @dataclass(frozen=True)
@@ -95,9 +100,8 @@ def _start_backend(repo_root: Path, backend: str, port: int) -> subprocess.Popen
     env.setdefault("UV_CACHE_DIR", str((repo_root / ".uv-cache").resolve()))
     env.setdefault("HF_HOME", str((repo_root / ".hf-cache").resolve()))
     env.setdefault("TRANSFORMERS_CACHE", str((repo_root / ".hf-cache" / "transformers").resolve()))
-    env.setdefault("PYTORCH_MPS_LOW_WATERMARK_RATIO", "1.4")
-    env.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "1.7")
-
+    env.pop("PYTORCH_MPS_LOW_WATERMARK_RATIO", None)
+    env.pop("PYTORCH_MPS_HIGH_WATERMARK_RATIO", None)
     return subprocess.Popen(
         cmd,
         cwd=str(repo_root),
@@ -190,17 +194,21 @@ def _synthesize_case(
     out_path.write_bytes(raw)
 
 
-def build_cases(backends: list[str], seeds: list[int]) -> list[DiagnosticCase]:
+def build_cases(
+    backends: list[str], seeds: list[int], *, quick: bool = False
+) -> list[DiagnosticCase]:
     cases: list[DiagnosticCase] = []
 
     for backend in backends:
-        is_coreml = backend.endswith("+coreml")
-
         cases.append(
             DiagnosticCase(
-                name=f"{backend}_baseline_steps10_cfg13_seed42",
+                name=(
+                    f"{backend}_quality_steps20_cfg13_seed42"
+                    if quick
+                    else f"{backend}_baseline_steps10_cfg13_seed42"
+                ),
                 backend=backend,
-                diffusion_steps=10,
+                diffusion_steps=20 if quick else 10,
                 cfg_scale=1.3,
                 seed=42,
                 solver="dpm",
@@ -208,6 +216,9 @@ def build_cases(backends: list[str], seeds: list[int]) -> list[DiagnosticCase]:
                 quantize_diffusion=False,
             )
         )
+
+        if quick:
+            continue
 
         cases.append(
             DiagnosticCase(
@@ -236,21 +247,6 @@ def build_cases(backends: list[str], seeds: list[int]) -> list[DiagnosticCase]:
                 )
             )
 
-        if not is_coreml:
-            for q in (8, 4):
-                cases.append(
-                    DiagnosticCase(
-                        name=f"{backend}_steps20_cfg13_seed42_q{q}",
-                        backend=backend,
-                        diffusion_steps=20,
-                        cfg_scale=1.3,
-                        seed=42,
-                        solver="dpm",
-                        quantize=q,
-                        quantize_diffusion=False,
-                    )
-                )
-
         for seed in seeds:
             cases.append(
                 DiagnosticCase(
@@ -273,8 +269,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--backends",
         nargs="+",
-        choices=["vibevoice-7b-coreml", "vibevoice-7b+coreml"],
-        default=["vibevoice-7b-coreml", "vibevoice-7b+coreml"],
+        choices=[
+            "vibevoice-1.5b-coreml",
+            "vibevoice-1.5b+coreml",
+            "vibevoice-7b-coreml",
+            "vibevoice-7b+coreml",
+        ],
+        default=["vibevoice-1.5b-coreml"],
         help="Backends to test",
     )
     parser.add_argument(
@@ -334,6 +335,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip per-reference single-speaker isolation tests",
     )
+    parser.add_argument(
+        "--skip-dialogue",
+        action="store_true",
+        help="Skip the male/female dialogue cases",
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Generate one dialogue sample per backend, plus single-speaker samples",
+    )
     return parser.parse_args(argv)
 
 
@@ -344,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = (repo_root / args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cases = build_cases(args.backends, args.seeds)
+    cases = build_cases(args.backends, args.seeds, quick=args.quick)
     cases_by_backend: dict[str, list[DiagnosticCase]] = {}
     for case in cases:
         cases_by_backend.setdefault(case.backend, []).append(case)
@@ -360,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             _wait_until_ready(base_url, process, args.startup_timeout)
 
-            for case in cases_by_backend.get(backend, []):
+            for case in ([] if args.skip_dialogue else cases_by_backend.get(backend, [])):
                 target = out_dir / backend / f"{_slug(case.name)}.mp3"
                 print(f"[run] {backend}: {case.name}")
                 try:

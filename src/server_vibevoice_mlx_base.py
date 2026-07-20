@@ -243,32 +243,23 @@ class VibeVoiceMlxEngine:
             )
 
     @staticmethod
-    def _vibevoice_command() -> list[str]:
-        local_pkg = Path(__file__).resolve().parent / "vibevoice_mlx" / "e2e_pipeline.py"
-        if local_pkg.exists():
-            return ["uv", "run", "python", "-m", "vibevoice_mlx.e2e_pipeline"]
-
-        cloned_repo = Path("/tmp/vibevoice-mlx") / "vibevoice_mlx" / "e2e_pipeline.py"
-        if cloned_repo.exists():
-            return [
-                "uv",
-                "run",
-                "--directory",
-                "/tmp/vibevoice-mlx",
-                "python",
-                "-m",
-                "vibevoice_mlx.e2e_pipeline",
-            ]
-
-        if shutil_which("vibevoice-mlx"):
-            return ["vibevoice-mlx"]
-
-        raise RuntimeError(
-            "VibeVoice-MLX runner not found. Expected one of:\n"
-            "1) vendored package at ./vibevoice_mlx\n"
-            "2) local clone at /tmp/vibevoice-mlx\n"
-            "3) installed CLI 'vibevoice-mlx'"
+    def _community_command() -> list[str]:
+        community_root = Path(
+            os.environ.get("VIBEVOICE_COMMUNITY_ROOT", "/tmp/vibevoice")
         )
+        python = Path(
+            os.environ.get(
+                "VIBEVOICE_COMMUNITY_PYTHON", community_root / ".venv/bin/python"
+            )
+        )
+        runner = Path(__file__).resolve().parent / "vibevoice_community_runner.py"
+        if not community_root.is_dir() or not python.is_file():
+            raise RuntimeError(
+                "Community VibeVoice is required. Expected its checkout and virtualenv at "
+                f"{community_root} (override with VIBEVOICE_COMMUNITY_ROOT and "
+                "VIBEVOICE_COMMUNITY_PYTHON)."
+            )
+        return [str(python), str(runner), "--community-root", str(community_root)]
 
     def _build_prompt(
         self,
@@ -326,12 +317,12 @@ class VibeVoiceMlxEngine:
 
         has_speaker_labels = bool(re.search(r"(?im)^\s*speaker\s*\d+\s*:", base))
         base = re.sub(r"(?im)^\s*speaker\s*(\d+)\s*:", _normalize_speaker_label, base)
-        if speaker_count <= 1 and not has_speaker_labels:
-            lines = [ln.strip() for ln in base.splitlines() if ln.strip()]
-            if lines:
-                base = "\n".join(f"Speaker 1: {ln}" for ln in lines)
-            else:
-                base = f"Speaker 1: {base}"
+
+        if not has_speaker_labels:
+            # The community processor only accepts Speaker N transcript lines.
+            # Flatten plain narration first so it remains one continuous turn.
+            base = " ".join(line.strip() for line in base.splitlines() if line.strip())
+            base = f"Speaker 1: {base}"
 
         mapped = self.EMOTION_MAP.get((emotion or "").strip().lower(), "normal")
         if use_stage_directions and mapped:
@@ -381,19 +372,19 @@ class VibeVoiceMlxEngine:
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             temp_output = tmp.name
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
+            tmp.write(prompt)
+            temp_prompt = tmp.name
 
         cmd = [
-            *self._vibevoice_command(),
+            *self._community_command(),
             "--model",
             self.variant.model_id,
-            "--text",
-            prompt,
+            "--text-file",
+            temp_prompt,
             "--output",
             temp_output,
         ]
-
-        if self.variant.coreml_semantic:
-            cmd.append("--coreml-semantic")
 
         cmd.extend([
             "--diffusion-steps",
@@ -402,25 +393,7 @@ class VibeVoiceMlxEngine:
             str(self._normalize_cfg_scale(kwargs.get("cfg_scale"))),
             "--seed",
             str(self._normalize_seed(kwargs.get("seed"))),
-            "--solver",
-            self._normalize_solver(kwargs.get("solver")),
-            "--silence-detection",
-            "--trim-trailing-silence",
         ])
-
-        quantize = self._normalize_quantize(kwargs.get("quantize"))
-        if quantize is not None:
-            cmd.extend(["--quantize", str(quantize)])
-
-        if bool(kwargs.get("quantize_diffusion", False)):
-            cmd.append("--quantize-diffusion")
-
-        max_speech_tokens = self._auto_max_speech_tokens(
-            prompt,
-            speaker_count=len(speaker_names),
-            requested=kwargs.get("max_speech_tokens"),
-        )
-        cmd.extend(["--max-speech-tokens", str(max_speech_tokens)])
 
         if ref_audio:
             self._validate_reference_audio(ref_audio)
@@ -445,14 +418,12 @@ class VibeVoiceMlxEngine:
                 os.unlink(temp_output)
             except OSError:
                 pass
+            try:
+                os.unlink(temp_prompt)
+            except OSError:
+                pass
 
         return write_audio_output(output_path, audio, sample_rate=int(sample_rate))
-
-
-def shutil_which(program: str) -> Optional[str]:
-    import shutil
-
-    return shutil.which(program)
 
 
 def create_vibevoice_mlx_app(variant: VibeVoiceVariant):
@@ -469,21 +440,21 @@ def create_vibevoice_mlx_app(variant: VibeVoiceVariant):
         backend_capabilities={
             "backendTag": variant.backend_tag,
             "model": variant.model_id,
-            "coremlSemantic": variant.coreml_semantic,
+            "coremlSemantic": False,
             "voiceCloning": {
                 "supported": True,
                 "inputs": ["ref_audio", "voice", "speaker_names"],
-                "refAudioCliMapping": "ref_audio -> --ref-audio",
+                "refAudioCliMapping": "ref_audio -> community VibeVoice voice_samples",
             },
             "speakerRouting": {
                 "supported": True,
                 "maxSpeakers": 4,
                 "routingFormat": "Speaker N: ...",
                 "speakerIndexing": "1-based in prompts",
-                "notes": "Preferred flow matches upstream CLI: text transcript with Speaker 1/Speaker 2 labels plus ref_audio list.",
+                "notes": "Uses community VibeVoice reference conditioning with Speaker 1/Speaker 2 labels plus ref_audio list.",
                 "singleSpeakerDefaults": {
                     "whenVoiceProvidedWithoutSpeakerNames": "use-single-speaker",
-                    "autoLabelWhenMissing": "Speaker 1",
+                    "unlabeledMultilineHandling": "flatten-to-single-speaker-turn",
                 },
             },
             "voiceReferenceResolution": {
@@ -507,26 +478,22 @@ def create_vibevoice_mlx_app(variant: VibeVoiceVariant):
                 }
             },
             "diffusion": {
-                "requestFields": ["diffusion_steps", "cfg_scale", "seed", "solver"],
+                "requestFields": ["diffusion_steps", "cfg_scale", "seed"],
                 "defaults": {
                     "diffusionSteps": 20,
                     "cfgScale": 1.3,
                     "seed": 42,
-                    "solver": "dpm",
                 },
                 "ranges": {
                     "diffusionSteps": [5, 50],
                 },
             },
-            "silenceHandling": {
-                "enabledByDefault": True,
-                "cliFlags": ["--silence-detection", "--trim-trailing-silence"],
-            },
+            "silenceHandling": {"enabledByDefault": False, "cliFlags": []},
             "quantization": {
-                "supported": True,
-                "llmBackbone": [4, 8],
-                "diffusionHeadInt8": True,
-                "requestFields": ["quantize", "quantize_diffusion"],
+                "supported": False,
+                "llmBackbone": [],
+                "diffusionHeadInt8": False,
+                "requestFields": [],
             },
             "languageConditioning": {
                 "apiDefaultLanguage": None,
