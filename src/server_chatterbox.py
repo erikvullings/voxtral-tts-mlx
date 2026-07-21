@@ -36,6 +36,7 @@ import torch
 import torch.nn.functional as F
 from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 from api_shared import (
+    _SENTENCE_SPLIT_RE,
     OpenAISpeechRequest,
     TranscriptDocument,
     VoiceOption,
@@ -294,7 +295,7 @@ class RealChatterboxEngine:
     @staticmethod
     def _split_text_chunks(text: str, max_chars: int = 220) -> list[str]:
         parts = [
-            chunk.strip() for chunk in re.split(r"(?<=[.!?])\s+", text) if chunk.strip()
+            chunk.strip() for chunk in _SENTENCE_SPLIT_RE.split(text) if chunk.strip()
         ]
         if not parts:
             return [text.strip()] if text.strip() else []

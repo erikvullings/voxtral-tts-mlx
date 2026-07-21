@@ -1,3 +1,4 @@
+import difflib
 import os
 import re
 import threading
@@ -34,6 +35,14 @@ def _load_local_env_file() -> None:
 
 
 _load_local_env_file()
+
+
+# Splits on whitespace that follows sentence-ending punctuation, optionally
+# followed by a closing quote mark (e.g. `jij?"` or `Sarah."`). A plain
+# `(?<=[.!?])\s+` misses that quoted case, since the character right before
+# the whitespace is the quote mark, not the punctuation -- it would merge a
+# quoted sentence into whatever follows it.
+_SENTENCE_SPLIT_RE = re.compile(r'(?:(?<=[.!?])|(?<=[.!?]["\'”’]))\s+')
 
 
 class OpenAISpeechRequest(BaseModel):
@@ -401,10 +410,14 @@ class FasterWhisperAligner:
         return None
 
     @staticmethod
+    def _normalize_token(text: str) -> str:
+        return re.sub(r"[^\w]", "", text, flags=re.UNICODE).lower()
+
+    @staticmethod
     def _split_source_sentences(text: str) -> list[list[str]]:
         sentence_texts = [
             chunk.strip()
-            for chunk in re.split(r"(?<=[.!?])\s+", text.strip())
+            for chunk in _SENTENCE_SPLIT_RE.split(text.strip())
             if chunk.strip()
         ]
         if not sentence_texts and text.strip():
@@ -459,39 +472,95 @@ class FasterWhisperAligner:
         sentence_tokens = self._split_source_sentences(source_text)
         result_sentences: list[dict[str, Any]] = []
 
-        word_index = 0
+        # Align source words to whisper's word list by content, not position.
+        # A naive positional zip breaks permanently the moment whisper's word
+        # count diverges from the source's -- e.g. a single hallucinated or
+        # dropped word (common at TTS chunk-stitch boundaries) would shift
+        # every later timestamp by one slot for the rest of the transcript.
+        flat_tokens: list[tuple[int, str]] = [
+            (sentence_idx, token)
+            for sentence_idx, tokens in enumerate(sentence_tokens)
+            for token in tokens
+        ]
+        source_norm = [self._normalize_token(token) for _, token in flat_tokens]
+        whisper_norm = [self._normalize_token(w["text"]) for w in timed_words]
+
+        matcher = difflib.SequenceMatcher(None, source_norm, whisper_norm, autojunk=False)
+        matched: dict[int, dict[str, float]] = {}
+        last_whisper_idx = -1
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                for offset in range(i2 - i1):
+                    timed = timed_words[j1 + offset]
+                    matched[i1 + offset] = {"start": timed["start"], "end": timed["end"]}
+                last_whisper_idx = max(last_whisper_idx, j2 - 1)
+            elif tag == "replace":
+                # Pair up the overlapping run positionally so a plain word
+                # substitution still gets a timestamp; any surplus on either
+                # side is left unmatched rather than dragging later words
+                # out of position.
+                for offset in range(min(i2 - i1, j2 - j1)):
+                    timed = timed_words[j1 + offset]
+                    matched[i1 + offset] = {"start": timed["start"], "end": timed["end"]}
+                last_whisper_idx = max(last_whisper_idx, j2 - 1)
+            elif tag == "insert":
+                # Whisper heard extra word(s) with no source counterpart
+                # (hallucination/repetition) -- drop them instead of letting
+                # them consume a slot meant for a later source word.
+                last_whisper_idx = max(last_whisper_idx, j2 - 1)
+            # tag == "delete": source word whisper produced no timestamp for;
+            # left unmatched below, handled by the interpolation pass.
+
+        word_index = last_whisper_idx + 1
+
         sentence_rows: list[list[dict[str, Any]]] = []
+        flat_idx = 0
         for tokens in sentence_tokens:
             row: list[dict[str, Any]] = []
             for token in tokens:
-                if word_index < len(timed_words):
-                    timed = timed_words[word_index]
+                timed = matched.get(flat_idx)
+                if timed is not None:
                     row.append(
                         {"text": token, "start": timed["start"], "end": timed["end"]}
                     )
-                    word_index += 1
                 else:
                     row.append({"text": token, "start": None, "end": None})
+                flat_idx += 1
             sentence_rows.append(row)
 
-        untimed = [
-            word for row in sentence_rows for word in row if word["start"] is None
-        ]
-        if untimed:
-            timed_flat = [
-                word
-                for row in sentence_rows
-                for word in row
-                if word["start"] is not None
-            ]
-            tail_start = timed_flat[-1]["end"] if timed_flat else 0.0
-            duration = self._audio_duration(audio_path)
-            tail_end = max(duration or 0.0, tail_start)
-            weights = [max(len(word["text"]), 1) for word in untimed]
+        # Fill in words the aligner couldn't match to a whisper word (ASR
+        # dropped or garbled them). Each contiguous run of unmatched words is
+        # interpolated between its own neighboring matched timestamps rather
+        # than against the document's last matched word -- a mid-transcript
+        # gap must not be stretched out to the end of the audio.
+        flat_words = [word for row in sentence_rows for word in row]
+        total = len(flat_words)
+        cursor_idx = 0
+        while cursor_idx < total:
+            if flat_words[cursor_idx]["start"] is not None:
+                cursor_idx += 1
+                continue
+
+            gap_start_idx = cursor_idx
+            while cursor_idx < total and flat_words[cursor_idx]["start"] is None:
+                cursor_idx += 1
+            gap = flat_words[gap_start_idx:cursor_idx]
+
+            span_start = (
+                flat_words[gap_start_idx - 1]["end"] if gap_start_idx > 0 else 0.0
+            )
+            if cursor_idx < total:
+                span_end = flat_words[cursor_idx]["start"]
+            else:
+                duration = self._audio_duration(audio_path)
+                span_end = max(duration or 0.0, span_start)
+            span_end = max(span_end, span_start)
+
+            weights = [max(len(word["text"]), 1) for word in gap]
             total_weight = sum(weights)
-            span = tail_end - tail_start
-            cursor = tail_start
-            for word, weight in zip(untimed, weights):
+            span = span_end - span_start
+            cursor = span_start
+            for word, weight in zip(gap, weights):
                 word["start"] = round(cursor, 3)
                 cursor += span * weight / total_weight
                 word["end"] = round(cursor, 3)

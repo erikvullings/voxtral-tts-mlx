@@ -8,7 +8,12 @@ from typing import Any, Iterable, Optional, Protocol, cast
 import mlx.core as mx
 import numpy as np
 
-from api_shared import OpenAISpeechRequest, VoxtralExtendedRequest, create_app
+from api_shared import (
+    _SENTENCE_SPLIT_RE,
+    OpenAISpeechRequest,
+    VoxtralExtendedRequest,
+    create_app,
+)
 from mlx_utils import apply_logit_penalty, warmup_mlx_model
 from server_mlx_audio import collect_generation_audio, write_audio_output
 
@@ -381,7 +386,7 @@ class RealKugelAudioEngine:
 
         sentences = [
             chunk.strip()
-            for chunk in re.split(r"(?<=[.!?])\s+", normalized)
+            for chunk in _SENTENCE_SPLIT_RE.split(normalized)
             if chunk.strip()
         ]
         if not sentences:
